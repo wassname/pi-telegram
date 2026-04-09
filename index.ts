@@ -1,5 +1,5 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { basename, extname, join } from "node:path";
+import { basename, join } from "node:path";
 import { homedir } from "node:os";
 
 import type { ImageContent, Model, TextContent } from "@mariozechner/pi-ai";
@@ -10,6 +10,8 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 import { SettingsManager } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+
+// --- Telegram API Types ---
 
 interface TelegramConfig {
   botToken?: string;
@@ -132,11 +134,18 @@ interface TelegramBotCommand {
   description: string;
 }
 
+// --- Extension State Types ---
+
 interface DownloadedTelegramFile {
   path: string;
   fileName: string;
   isImage: boolean;
   mimeType?: string;
+}
+
+interface QueuedAttachment {
+  path: string;
+  fileName: string;
 }
 
 interface PendingTelegramTurn {
@@ -148,11 +157,6 @@ interface PendingTelegramTurn {
 }
 
 type ActiveTelegramTurn = PendingTelegramTurn;
-
-interface QueuedAttachment {
-  path: string;
-  fileName: string;
-}
 
 interface TelegramPreviewState {
   mode: "draft" | "message";
@@ -187,8 +191,21 @@ interface TelegramModelMenuState {
   mode: "status" | "model" | "thinking";
 }
 
-const CONFIG_PATH = join(homedir(), ".pi", "agent", "telegram.json");
-const TEMP_DIR = join(homedir(), ".pi", "agent", "tmp", "telegram");
+interface TelegramUsageStats {
+  totalInput: number;
+  totalOutput: number;
+  totalCacheRead: number;
+  totalCacheWrite: number;
+  totalCost: number;
+}
+
+type TelegramReplyMarkup = {
+  inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+};
+
+const AGENT_DIR = join(homedir(), ".pi", "agent");
+const CONFIG_PATH = join(AGENT_DIR, "telegram.json");
+const TEMP_DIR = join(AGENT_DIR, "tmp", "telegram");
 const TELEGRAM_PREFIX = "[telegram]";
 const MAX_MESSAGE_LENGTH = 4096;
 const MAX_ATTACHMENTS_PER_TURN = 10;
@@ -204,7 +221,6 @@ const THINKING_LEVELS: readonly ThinkingLevel[] = [
   "high",
   "xhigh",
 ];
-
 const SYSTEM_PROMPT_SUFFIX = `
 
 Telegram bridge extension is active.
@@ -212,6 +228,9 @@ Telegram bridge extension is active.
 - [telegram] messages may include local temp file paths for Telegram attachments. Read those files as needed.
 - If a [telegram] user asked for a file or generated artifact, use the telegram_attach tool with the local file path so the extension can send it with your next final reply.
 - Do not assume mentioning a local file path in plain text will send it to Telegram. Use telegram_attach.`;
+const MODEL_MENU_TITLE = "<b>Choose a model:</b>";
+
+// --- Generic Utilities ---
 
 function isTelegramPrompt(prompt: string): boolean {
   return prompt.trimStart().startsWith(TELEGRAM_PREFIX);
@@ -240,11 +259,13 @@ function guessExtensionFromMime(
 }
 
 function guessMediaType(path: string): string | undefined {
-  const ext = extname(path).toLowerCase();
-  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
-  if (ext === ".png") return "image/png";
-  if (ext === ".webp") return "image/webp";
-  if (ext === ".gif") return "image/gif";
+  const normalized = path.toLowerCase();
+  if (normalized.endsWith(".jpg") || normalized.endsWith(".jpeg")) {
+    return "image/jpeg";
+  }
+  if (normalized.endsWith(".png")) return "image/png";
+  if (normalized.endsWith(".webp")) return "image/webp";
+  if (normalized.endsWith(".gif")) return "image/gif";
   return undefined;
 }
 
@@ -279,13 +300,6 @@ function escapeRegex(text: string): string {
   return text.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
 }
 
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
 function globMatches(text: string, pattern: string): boolean {
   let regex = "^";
   for (let i = 0; i < pattern.length; i++) {
@@ -302,11 +316,9 @@ function globMatches(text: string, pattern: string): boolean {
       const end = pattern.indexOf("]", i + 1);
       if (end !== -1) {
         const content = pattern.slice(i + 1, end);
-        if (content.startsWith("!")) {
-          regex += `[^${content.slice(1)}]`;
-        } else {
-          regex += `[${content}]`;
-        }
+        regex += content.startsWith("!")
+          ? `[^${content.slice(1)}]`
+          : `[${content}]`;
         i = end;
         continue;
       }
@@ -513,9 +525,7 @@ function formatScopedModelButtonText(
   entry: ScopedTelegramModel,
   currentModel: Model<any> | undefined,
 ): string {
-  let label = `${modelsMatch(entry.model, currentModel) ? "✅ " : ""}${
-    entry.model.id
-  } [${entry.model.provider}]`;
+  let label = `${modelsMatch(entry.model, currentModel) ? "✅ " : ""}${entry.model.id} [${entry.model.provider}]`;
   if (entry.thinkingLevel) {
     label += ` · ${entry.thinkingLevel}`;
   }
@@ -533,6 +543,17 @@ function getModelMenuItems(
     ? state.scopedModels
     : state.allModels;
 }
+
+// --- Escaping ---
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// --- Plain Preview Rendering ---
 
 function splitPlainMarkdownLine(line: string, maxLength = 1500): string[] {
   if (line.length <= maxLength) return [line];
@@ -576,6 +597,18 @@ function stripInlineMarkdownToPlainText(text: string): string {
   result = result.replace(/~~(.+?)~~/g, "$1");
   result = result.replace(/\\([\\`*_{}\[\]()#+\-.!>~|])/g, "$1");
   return result;
+}
+
+function isMarkdownTableSeparator(line: string): boolean {
+  return /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$/.test(line);
+}
+
+function isFencedCodeStart(line: string): boolean {
+  return /^\s*```/.test(line);
+}
+
+function isIndentedCodeLine(line: string): boolean {
+  return /^(?:\t| {4,})/.test(line);
 }
 
 function renderMarkdownPreviewText(markdown: string): string {
@@ -639,6 +672,8 @@ function renderMarkdownPreviewText(markdown: string): string {
   return output.join("\n");
 }
 
+// --- Rich Markdown Rendering ---
+
 function renderInlineMarkdown(text: string): string {
   const tokens: string[] = [];
   const makeToken = (html: string): string => {
@@ -689,11 +724,7 @@ function renderInlineMarkdown(text: string): string {
 }
 
 function buildListIndent(level: number): string {
-  return "&nbsp;".repeat(Math.max(0, Math.min(12, level * 2)));
-}
-
-function isMarkdownTableSeparator(line: string): boolean {
-  return /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$/.test(line);
+  return "\u00A0".repeat(Math.max(0, Math.min(12, level * 2)));
 }
 
 function parseMarkdownTableRow(line: string): string[] {
@@ -753,7 +784,7 @@ function renderMarkdownTextLines(block: string): string[] {
       }
       const trimmed = piece.trim();
       if (/^([-*_]\s*){3,}$/.test(trimmed)) {
-        rendered.push("──────────────────────");
+        rendered.push("────────────────");
         continue;
       }
       rendered.push(renderInlineMarkdown(piece));
@@ -834,14 +865,6 @@ function renderMarkdownQuoteBlock(lines: string[]): string[] {
   const inner = lines.map((line) => line.replace(/^\s*>\s?/, "")).join("\n");
   const rendered = renderMarkdownTextLines(inner).join("\n");
   return rendered.length > 0 ? [`<blockquote>${rendered}</blockquote>`] : [];
-}
-
-function isFencedCodeStart(line: string): boolean {
-  return /^\s*```/.test(line);
-}
-
-function isIndentedCodeLine(line: string): boolean {
-  return /^(?:\t| {4,})/.test(line);
 }
 
 function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
@@ -954,6 +977,8 @@ function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
   return chunks;
 }
 
+// --- Unified Telegram Rendering ---
+
 type TelegramRenderMode = "plain" | "markdown" | "html";
 
 interface TelegramRenderedChunk {
@@ -961,36 +986,16 @@ interface TelegramRenderedChunk {
   parseMode?: "HTML";
 }
 
-function renderTelegramMessage(
-  text: string,
-  options?: { mode?: TelegramRenderMode },
-): TelegramRenderedChunk[] {
-  const mode = options?.mode ?? "plain";
-  if (mode === "plain") {
-    return chunkParagraphs(text).map((chunk) => ({ text: chunk }));
-  }
-  if (mode === "html") {
-    return [{ text, parseMode: "HTML" }];
-  }
-  return renderMarkdownToTelegramHtmlChunks(text).map((chunk) => ({
-    text: chunk,
-    parseMode: "HTML",
-  }));
-}
-
 function chunkParagraphs(text: string): string[] {
   if (text.length <= MAX_MESSAGE_LENGTH) return [text];
-
   const normalized = text.replace(/\r\n/g, "\n");
   const paragraphs = normalized.split(/\n\n+/);
   const chunks: string[] = [];
   let current = "";
-
   const flushCurrent = (): void => {
     if (current.trim().length > 0) chunks.push(current);
     current = "";
   };
-
   const splitLongBlock = (block: string): string[] => {
     if (block.length <= MAX_MESSAGE_LENGTH) return [block];
     const lines = block.split("\n");
@@ -1015,10 +1020,11 @@ function chunkParagraphs(text: string): string[] {
         lineChunks.push(line.slice(i, i + MAX_MESSAGE_LENGTH));
       }
     }
-    if (lineCurrent.length > 0) lineChunks.push(lineCurrent);
+    if (lineCurrent.length > 0) {
+      lineChunks.push(lineCurrent);
+    }
     return lineChunks;
   };
-
   for (const paragraph of paragraphs) {
     if (paragraph.length === 0) continue;
     const parts = splitLongBlock(paragraph);
@@ -1036,6 +1042,25 @@ function chunkParagraphs(text: string): string[] {
   return chunks;
 }
 
+function renderTelegramMessage(
+  text: string,
+  options?: { mode?: TelegramRenderMode },
+): TelegramRenderedChunk[] {
+  const mode = options?.mode ?? "plain";
+  if (mode === "plain") {
+    return chunkParagraphs(text).map((chunk) => ({ text: chunk }));
+  }
+  if (mode === "html") {
+    return [{ text, parseMode: "HTML" }];
+  }
+  return renderMarkdownToTelegramHtmlChunks(text).map((chunk) => ({
+    text: chunk,
+    parseMode: "HTML",
+  }));
+}
+
+// --- Persistence ---
+
 async function readConfig(): Promise<TelegramConfig> {
   try {
     const content = await readFile(CONFIG_PATH, "utf8");
@@ -1047,13 +1072,15 @@ async function readConfig(): Promise<TelegramConfig> {
 }
 
 async function writeConfig(config: TelegramConfig): Promise<void> {
-  await mkdir(join(homedir(), ".pi", "agent"), { recursive: true });
+  await mkdir(AGENT_DIR, { recursive: true });
   await writeFile(
     CONFIG_PATH,
     JSON.stringify(config, null, "\t") + "\n",
     "utf8",
   );
 }
+
+// --- Extension Runtime ---
 
 export default function (pi: ExtensionAPI) {
   let config: TelegramConfig = {};
@@ -1072,10 +1099,14 @@ export default function (pi: ExtensionAPI) {
   const mediaGroups = new Map<string, TelegramMediaGroupState>();
   const modelMenus = new Map<number, TelegramModelMenuState>();
 
+  // --- Runtime State ---
+
   function allocateDraftId(): number {
     nextDraftId = nextDraftId >= TELEGRAM_DRAFT_ID_MAX ? 1 : nextDraftId + 1;
     return nextDraftId;
   }
+
+  // --- Status ---
 
   function updateStatus(ctx: ExtensionContext, error?: string): void {
     const theme = ctx.ui.theme;
@@ -1124,6 +1155,8 @@ export default function (pi: ExtensionAPI) {
       `${label} ${theme.fg("success", "connected")}`,
     );
   }
+
+  // --- Telegram API ---
 
   async function callTelegram<TResponse>(
     method: string,
@@ -1203,6 +1236,24 @@ export default function (pi: ExtensionAPI) {
     return targetPath;
   }
 
+  async function answerCallbackQuery(
+    callbackQueryId: string,
+    text?: string,
+  ): Promise<void> {
+    try {
+      await callTelegram<boolean>(
+        "answerCallbackQuery",
+        text
+          ? { callback_query_id: callbackQueryId, text }
+          : { callback_query_id: callbackQueryId },
+      );
+    } catch {
+      // ignore
+    }
+  }
+
+  // --- Message Delivery & Preview ---
+
   function startTypingLoop(ctx: ExtensionContext, chatId?: number): void {
     const targetChatId = chatId ?? activeTelegramTurn?.chatId;
     if (typingInterval || targetChatId === undefined) return;
@@ -1235,10 +1286,9 @@ export default function (pi: ExtensionAPI) {
     return (message as unknown as { role?: string }).role === "assistant";
   }
 
-  function getMessageText(message: AgentMessage): string {
-    const value = message as unknown as Record<string, unknown>;
-    const content = Array.isArray(value.content) ? value.content : [];
-    return content
+  function extractTextContent(content: unknown): string {
+    const blocks = Array.isArray(content) ? content : [];
+    return blocks
       .filter(
         (block): block is { type: string; text?: string } =>
           typeof block === "object" && block !== null && "type" in block,
@@ -1249,6 +1299,61 @@ export default function (pi: ExtensionAPI) {
       .map((block) => block.text as string)
       .join("")
       .trim();
+  }
+
+  function getMessageText(message: AgentMessage): string {
+    return extractTextContent(
+      (message as unknown as Record<string, unknown>).content,
+    );
+  }
+
+  function createPreviewState(): TelegramPreviewState {
+    return {
+      mode: draftSupport === "unsupported" ? "message" : "draft",
+      pendingText: "",
+      lastSentText: "",
+    };
+  }
+
+  async function sendRenderedChunks(
+    chatId: number,
+    chunks: TelegramRenderedChunk[],
+    options?: { replyMarkup?: TelegramReplyMarkup },
+  ): Promise<number | undefined> {
+    let lastMessageId: number | undefined;
+    for (const [index, chunk] of chunks.entries()) {
+      const sent = await callTelegram<TelegramSentMessage>("sendMessage", {
+        chat_id: chatId,
+        text: chunk.text,
+        parse_mode: chunk.parseMode,
+        reply_markup:
+          index === chunks.length - 1 ? options?.replyMarkup : undefined,
+      });
+      lastMessageId = sent.message_id;
+    }
+    return lastMessageId;
+  }
+
+  async function editRenderedMessage(
+    chatId: number,
+    messageId: number,
+    chunks: TelegramRenderedChunk[],
+    options?: { replyMarkup?: TelegramReplyMarkup },
+  ): Promise<number | undefined> {
+    if (chunks.length === 0) return messageId;
+    const [firstChunk, ...remainingChunks] = chunks;
+    await callTelegram("editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text: firstChunk.text,
+      parse_mode: firstChunk.parseMode,
+      reply_markup:
+        remainingChunks.length === 0 ? options?.replyMarkup : undefined,
+    });
+    if (remainingChunks.length > 0) {
+      return sendRenderedChunks(chatId, remainingChunks, options);
+    }
+    return messageId;
   }
 
   async function clearPreview(chatId: number): Promise<void> {
@@ -1362,31 +1467,12 @@ export default function (pi: ExtensionAPI) {
       return false;
     }
     if (state.mode === "draft") {
-      for (const chunk of chunks) {
-        await callTelegram<TelegramSentMessage>("sendMessage", {
-          chat_id: chatId,
-          text: chunk.text,
-          parse_mode: chunk.parseMode,
-        });
-      }
+      await sendRenderedChunks(chatId, chunks);
       await clearPreview(chatId);
       return true;
     }
     if (state.messageId !== undefined) {
-      const [firstChunk, ...remainingChunks] = chunks;
-      await callTelegram("editMessageText", {
-        chat_id: chatId,
-        message_id: state.messageId,
-        text: firstChunk.text,
-        parse_mode: firstChunk.parseMode,
-      });
-      for (const chunk of remainingChunks) {
-        await callTelegram<TelegramSentMessage>("sendMessage", {
-          chat_id: chatId,
-          text: chunk.text,
-          parse_mode: chunk.parseMode,
-        });
-      }
+      await editRenderedMessage(chatId, state.messageId, chunks);
       previewState = undefined;
       return true;
     }
@@ -1402,16 +1488,7 @@ export default function (pi: ExtensionAPI) {
     const chunks = renderTelegramMessage(text, {
       mode: options?.parseMode === "HTML" ? "html" : "plain",
     });
-    let lastMessageId: number | undefined;
-    for (const chunk of chunks) {
-      const sent = await callTelegram<TelegramSentMessage>("sendMessage", {
-        chat_id: chatId,
-        text: chunk.text,
-        parse_mode: chunk.parseMode,
-      });
-      lastMessageId = sent.message_id;
-    }
-    return lastMessageId;
+    return sendRenderedChunks(chatId, chunks);
   }
 
   async function sendMarkdownReply(
@@ -1423,16 +1500,7 @@ export default function (pi: ExtensionAPI) {
     if (chunks.length === 0) {
       return sendTextReply(chatId, replyToMessageId, markdown);
     }
-    let lastMessageId: number | undefined;
-    for (const chunk of chunks) {
-      const sent = await callTelegram<TelegramSentMessage>("sendMessage", {
-        chat_id: chatId,
-        text: chunk.text,
-        parse_mode: chunk.parseMode,
-      });
-      lastMessageId = sent.message_id;
-    }
-    return lastMessageId;
+    return sendRenderedChunks(chatId, chunks);
   }
 
   async function sendQueuedAttachments(
@@ -1477,21 +1545,635 @@ export default function (pi: ExtensionAPI) {
         typeof message.errorMessage === "string"
           ? message.errorMessage
           : undefined;
-      const content = Array.isArray(message.content) ? message.content : [];
-      const text = content
-        .filter(
-          (block): block is { type: string; text?: string } =>
-            typeof block === "object" && block !== null && "type" in block,
-        )
-        .filter(
-          (block) => block.type === "text" && typeof block.text === "string",
-        )
-        .map((block) => block.text as string)
-        .join("")
-        .trim();
+      const text = extractTextContent(message.content);
       return { text: text || undefined, stopReason, errorMessage };
     }
     return {};
+  }
+
+  // --- Bridge Setup ---
+
+  async function promptForConfig(ctx: ExtensionContext): Promise<void> {
+    if (!ctx.hasUI || setupInProgress) return;
+    setupInProgress = true;
+    try {
+      const token = await ctx.ui.input(
+        "Telegram bot token",
+        "123456:ABCDEF...",
+      );
+      if (!token) return;
+
+      const nextConfig: TelegramConfig = { ...config, botToken: token.trim() };
+      const response = await fetch(
+        `https://api.telegram.org/bot${nextConfig.botToken}/getMe`,
+      );
+      const data = (await response.json()) as TelegramApiResponse<TelegramUser>;
+      if (!data.ok || !data.result) {
+        ctx.ui.notify(
+          data.description || "Invalid Telegram bot token",
+          "error",
+        );
+        return;
+      }
+
+      nextConfig.botId = data.result.id;
+      nextConfig.botUsername = data.result.username;
+      config = nextConfig;
+      await writeConfig(config);
+      ctx.ui.notify(
+        `Telegram bot connected: @${config.botUsername ?? "unknown"}`,
+        "info",
+      );
+      ctx.ui.notify(
+        "Send /start to your bot in Telegram to pair this extension with your account.",
+        "info",
+      );
+      await startPolling(ctx);
+      updateStatus(ctx);
+    } finally {
+      setupInProgress = false;
+    }
+  }
+
+  async function registerTelegramBotCommands(): Promise<void> {
+    const commands: TelegramBotCommand[] = [
+      {
+        command: "start",
+        description: "Show help and pair the Telegram bridge",
+      },
+      {
+        command: "status",
+        description: "Show model, usage, cost, and context status",
+      },
+      { command: "model", description: "Open the interactive model selector" },
+      { command: "compact", description: "Compact the current pi session" },
+      { command: "stop", description: "Abort the current pi task" },
+    ];
+    await callTelegram<boolean>("setMyCommands", { commands });
+  }
+
+  function getCurrentTelegramModel(
+    ctx: ExtensionContext,
+  ): Model<any> | undefined {
+    return currentTelegramModel ?? ctx.model;
+  }
+
+  // --- Interactive Menu State & Builders ---
+
+  async function getModelMenuState(
+    chatId: number,
+    ctx: ExtensionContext,
+  ): Promise<TelegramModelMenuState> {
+    const settingsManager = SettingsManager.create(ctx.cwd);
+    await settingsManager.reload();
+    ctx.modelRegistry.refresh();
+    const activeModel = getCurrentTelegramModel(ctx);
+    const availableModels = ctx.modelRegistry.getAvailable();
+    const allModels = sortScopedModels(
+      availableModels.map((model) => ({ model })),
+      activeModel,
+    );
+    const cliScopedModels = getCliScopedModelPatterns();
+    const configuredScopedModels =
+      cliScopedModels ?? settingsManager.getEnabledModels() ?? [];
+    const scopedModels =
+      configuredScopedModels.length > 0
+        ? sortScopedModels(
+            resolveScopedModelPatterns(configuredScopedModels, availableModels),
+            activeModel,
+          )
+        : [];
+    let note: string | undefined;
+    if (configuredScopedModels.length > 0 && scopedModels.length === 0) {
+      note = cliScopedModels
+        ? "No CLI scoped models matched the current auth configuration. Showing all available models."
+        : "No scoped models matched the current auth configuration. Showing all available models.";
+    }
+    return {
+      chatId,
+      messageId: 0,
+      page: 0,
+      scope: scopedModels.length > 0 ? "scoped" : "all",
+      scopedModels,
+      allModels,
+      note,
+      mode: "status",
+    };
+  }
+
+  function buildThinkingMenuText(ctx: ExtensionContext): string {
+    const activeModel = getCurrentTelegramModel(ctx);
+    const lines = ["Choose a thinking level"];
+    if (activeModel) {
+      lines.push(`Model: ${getCanonicalModelId(activeModel)}`);
+    }
+    lines.push(`Current: ${pi.getThinkingLevel()}`);
+    return lines.join("\n");
+  }
+
+  function buildModelMenuReplyMarkup(
+    state: TelegramModelMenuState,
+    currentModel: Model<any> | undefined,
+  ): TelegramReplyMarkup {
+    const items = getModelMenuItems(state);
+    const pageCount = Math.max(
+      1,
+      Math.ceil(items.length / TELEGRAM_MODEL_PAGE_SIZE),
+    );
+    state.page = Math.max(0, Math.min(state.page, pageCount - 1));
+    const start = state.page * TELEGRAM_MODEL_PAGE_SIZE;
+    const pageItems = items.slice(start, start + TELEGRAM_MODEL_PAGE_SIZE);
+    const rows = pageItems.map((entry, index) => [
+      {
+        text: formatScopedModelButtonText(entry, currentModel),
+        callback_data: `model:pick:${start + index}`,
+      },
+    ]);
+    if (pageCount > 1) {
+      const previousPage = state.page === 0 ? pageCount - 1 : state.page - 1;
+      const nextPage = state.page === pageCount - 1 ? 0 : state.page + 1;
+      rows.push([
+        { text: "⬅️", callback_data: `model:page:${previousPage}` },
+        { text: `${state.page + 1}/${pageCount}`, callback_data: "model:noop" },
+        { text: "➡️", callback_data: `model:page:${nextPage}` },
+      ]);
+    }
+    if (state.scopedModels.length > 0) {
+      rows.push([
+        {
+          text: state.scope === "scoped" ? "✅ Scoped" : "Scoped",
+          callback_data: "model:scope:scoped",
+        },
+        {
+          text: state.scope === "all" ? "✅ All" : "All",
+          callback_data: "model:scope:all",
+        },
+      ]);
+    }
+    return { inline_keyboard: rows };
+  }
+
+  function buildThinkingMenuReplyMarkup(
+    ctx: ExtensionContext,
+  ): TelegramReplyMarkup {
+    const currentThinkingLevel = pi.getThinkingLevel();
+    return {
+      inline_keyboard: THINKING_LEVELS.map((level) => [
+        {
+          text: level === currentThinkingLevel ? `✅ ${level}` : level,
+          callback_data: `thinking:set:${level}`,
+        },
+      ]),
+    };
+  }
+
+  // --- Interactive Menu Actions ---
+
+  async function updateModelMenuMessage(
+    state: TelegramModelMenuState,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    state.mode = "model";
+    const activeModel = getCurrentTelegramModel(ctx);
+    await editInteractiveMessage(
+      state.chatId,
+      state.messageId,
+      MODEL_MENU_TITLE,
+      "html",
+      buildModelMenuReplyMarkup(state, activeModel),
+    );
+  }
+
+  async function updateThinkingMenuMessage(
+    state: TelegramModelMenuState,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    state.mode = "thinking";
+    await editInteractiveMessage(
+      state.chatId,
+      state.messageId,
+      buildThinkingMenuText(ctx),
+      "plain",
+      buildThinkingMenuReplyMarkup(ctx),
+    );
+  }
+
+  async function editInteractiveMessage(
+    chatId: number,
+    messageId: number,
+    text: string,
+    mode: TelegramRenderMode,
+    replyMarkup: TelegramReplyMarkup,
+  ): Promise<void> {
+    await editRenderedMessage(
+      chatId,
+      messageId,
+      renderTelegramMessage(text, { mode }),
+      { replyMarkup },
+    );
+  }
+
+  async function sendInteractiveMessage(
+    chatId: number,
+    text: string,
+    mode: TelegramRenderMode,
+    replyMarkup: TelegramReplyMarkup,
+  ): Promise<number | undefined> {
+    return sendRenderedChunks(chatId, renderTelegramMessage(text, { mode }), {
+      replyMarkup,
+    });
+  }
+
+  async function ensureIdleOrNotify(
+    ctx: ExtensionContext,
+    chatId: number,
+    replyToMessageId: number,
+    busyMessage: string,
+  ): Promise<boolean> {
+    if (ctx.isIdle()) return true;
+    await sendTextReply(chatId, replyToMessageId, busyMessage);
+    return false;
+  }
+
+  async function showStatusMessage(
+    state: TelegramModelMenuState,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    state.mode = "status";
+    await editInteractiveMessage(
+      state.chatId,
+      state.messageId,
+      buildStatusHtml(ctx),
+      "html",
+      buildStatusReplyMarkup(ctx),
+    );
+  }
+
+  async function sendStatusMessage(
+    chatId: number,
+    replyToMessageId: number,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    const isIdle = await ensureIdleOrNotify(
+      ctx,
+      chatId,
+      replyToMessageId,
+      "Cannot open status while pi is busy. Send /stop first.",
+    );
+    if (!isIdle) return;
+    const state = await getModelMenuState(chatId, ctx);
+    const messageId = await sendInteractiveMessage(
+      chatId,
+      buildStatusHtml(ctx),
+      "html",
+      buildStatusReplyMarkup(ctx),
+    );
+    if (messageId === undefined) return;
+    state.messageId = messageId;
+    state.mode = "status";
+    modelMenus.set(messageId, state);
+  }
+
+  async function openModelMenu(
+    chatId: number,
+    replyToMessageId: number,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    const isIdle = await ensureIdleOrNotify(
+      ctx,
+      chatId,
+      replyToMessageId,
+      "Cannot switch model while pi is busy. Send /stop first.",
+    );
+    if (!isIdle) return;
+    const state = await getModelMenuState(chatId, ctx);
+    if (state.allModels.length === 0) {
+      await sendTextReply(
+        chatId,
+        replyToMessageId,
+        "No available models with configured auth.",
+      );
+      return;
+    }
+    const activeModel = getCurrentTelegramModel(ctx);
+    const messageId = await sendInteractiveMessage(
+      chatId,
+      MODEL_MENU_TITLE,
+      "html",
+      buildModelMenuReplyMarkup(state, activeModel),
+    );
+    if (messageId === undefined) return;
+    state.messageId = messageId;
+    state.mode = "model";
+    modelMenus.set(messageId, state);
+  }
+
+  async function handleStatusCallbackAction(
+    query: TelegramCallbackQuery,
+    state: TelegramModelMenuState,
+    ctx: ExtensionContext,
+  ): Promise<boolean> {
+    if (query.data === "status:model") {
+      await updateModelMenuMessage(state, ctx);
+      await answerCallbackQuery(query.id);
+      return true;
+    }
+    if (query.data !== "status:thinking") return false;
+    const activeModel = getCurrentTelegramModel(ctx);
+    if (!activeModel?.reasoning) {
+      await answerCallbackQuery(
+        query.id,
+        "This model has no reasoning controls.",
+      );
+      return true;
+    }
+    await updateThinkingMenuMessage(state, ctx);
+    await answerCallbackQuery(query.id);
+    return true;
+  }
+
+  async function handleThinkingCallbackAction(
+    query: TelegramCallbackQuery,
+    state: TelegramModelMenuState,
+    ctx: ExtensionContext,
+  ): Promise<boolean> {
+    if (!query.data?.startsWith("thinking:set:")) return false;
+    const level = query.data.slice("thinking:set:".length);
+    if (!isThinkingLevel(level)) {
+      await answerCallbackQuery(query.id, "Invalid thinking level.");
+      return true;
+    }
+    const activeModel = getCurrentTelegramModel(ctx);
+    if (!activeModel?.reasoning) {
+      await answerCallbackQuery(
+        query.id,
+        "This model has no reasoning controls.",
+      );
+      return true;
+    }
+    pi.setThinkingLevel(level);
+    await showStatusMessage(state, ctx);
+    await answerCallbackQuery(query.id, `Thinking: ${pi.getThinkingLevel()}`);
+    return true;
+  }
+
+  async function handleModelCallbackAction(
+    query: TelegramCallbackQuery,
+    state: TelegramModelMenuState,
+    ctx: ExtensionContext,
+  ): Promise<boolean> {
+    if (!query.data?.startsWith("model:")) return false;
+    const [, action, value] = query.data.split(":");
+    if (action === "noop") {
+      await answerCallbackQuery(query.id);
+      return true;
+    }
+    if (action === "scope") {
+      if (value !== "all" && value !== "scoped") {
+        await answerCallbackQuery(query.id, "Unknown model scope.");
+        return true;
+      }
+      if (value === state.scope) {
+        await answerCallbackQuery(query.id);
+        return true;
+      }
+      state.scope = value;
+      state.page = 0;
+      await updateModelMenuMessage(state, ctx);
+      await answerCallbackQuery(
+        query.id,
+        state.scope === "scoped" ? "Scoped models" : "All models",
+      );
+      return true;
+    }
+    if (action === "page") {
+      const page = Number(value);
+      if (!Number.isFinite(page)) {
+        await answerCallbackQuery(query.id, "Invalid page.");
+        return true;
+      }
+      if (page === state.page) {
+        await answerCallbackQuery(query.id);
+        return true;
+      }
+      state.page = page;
+      await updateModelMenuMessage(state, ctx);
+      await answerCallbackQuery(query.id);
+      return true;
+    }
+    if (action !== "pick") {
+      await answerCallbackQuery(query.id);
+      return true;
+    }
+    const index = Number(value);
+    if (!Number.isFinite(index)) {
+      await answerCallbackQuery(query.id, "Invalid model selection.");
+      return true;
+    }
+    const selection = getModelMenuItems(state)[index];
+    if (!selection) {
+      await answerCallbackQuery(
+        query.id,
+        "Selected model is no longer available.",
+      );
+      return true;
+    }
+    if (!ctx.isIdle()) {
+      await answerCallbackQuery(query.id, "Pi is busy. Send /stop first.");
+      return true;
+    }
+    const activeModel = getCurrentTelegramModel(ctx);
+    if (modelsMatch(selection.model, activeModel)) {
+      if (
+        selection.thinkingLevel &&
+        selection.thinkingLevel !== pi.getThinkingLevel()
+      ) {
+        pi.setThinkingLevel(selection.thinkingLevel);
+      }
+      await showStatusMessage(state, ctx);
+      await answerCallbackQuery(query.id, `Model: ${selection.model.id}`);
+      return true;
+    }
+    try {
+      const changed = await pi.setModel(selection.model);
+      if (changed === false) {
+        await answerCallbackQuery(query.id, "Model is not available.");
+        return true;
+      }
+      currentTelegramModel = selection.model;
+      if (selection.thinkingLevel) {
+        pi.setThinkingLevel(selection.thinkingLevel);
+      }
+      await showStatusMessage(state, ctx);
+      await answerCallbackQuery(query.id, `Switched to ${selection.model.id}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await answerCallbackQuery(query.id, message);
+    }
+    return true;
+  }
+
+  async function handleAuthorizedTelegramCallbackQuery(
+    query: TelegramCallbackQuery,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    const messageId = query.message?.message_id;
+    if (!messageId || !query.data) {
+      await answerCallbackQuery(query.id);
+      return;
+    }
+    const state = modelMenus.get(messageId);
+    if (!state) {
+      await answerCallbackQuery(query.id, "Interactive message expired.");
+      return;
+    }
+    const handled =
+      (await handleStatusCallbackAction(query, state, ctx)) ||
+      (await handleThinkingCallbackAction(query, state, ctx)) ||
+      (await handleModelCallbackAction(query, state, ctx));
+    if (!handled) {
+      await answerCallbackQuery(query.id);
+    }
+  }
+
+  // --- Status Rendering ---
+
+  function buildStatusReplyMarkup(ctx: ExtensionContext): TelegramReplyMarkup {
+    const activeModel = getCurrentTelegramModel(ctx);
+    const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+    rows.push([
+      {
+        text: formatStatusButtonLabel(
+          "Model",
+          activeModel ? getCanonicalModelId(activeModel) : "unknown",
+        ),
+        callback_data: "status:model",
+      },
+    ]);
+    if (activeModel?.reasoning) {
+      rows.push([
+        {
+          text: formatStatusButtonLabel("Thinking", pi.getThinkingLevel()),
+          callback_data: "status:thinking",
+        },
+      ]);
+    }
+    return { inline_keyboard: rows };
+  }
+
+  function collectUsageStats(ctx: ExtensionContext): TelegramUsageStats {
+    const stats: TelegramUsageStats = {
+      totalInput: 0,
+      totalOutput: 0,
+      totalCacheRead: 0,
+      totalCacheWrite: 0,
+      totalCost: 0,
+    };
+    for (const entry of ctx.sessionManager.getEntries()) {
+      if (entry.type !== "message" || entry.message.role !== "assistant") {
+        continue;
+      }
+      stats.totalInput += entry.message.usage.input;
+      stats.totalOutput += entry.message.usage.output;
+      stats.totalCacheRead += entry.message.usage.cacheRead;
+      stats.totalCacheWrite += entry.message.usage.cacheWrite;
+      stats.totalCost += entry.message.usage.cost.total;
+    }
+    return stats;
+  }
+
+  function buildStatusRow(label: string, value: string): string {
+    return `<b>${escapeHtml(label)}:</b> <code>${escapeHtml(value)}</code>`;
+  }
+
+  function buildUsageSummary(stats: TelegramUsageStats): string | undefined {
+    const tokenParts: string[] = [];
+    if (stats.totalInput) tokenParts.push(`↑${formatTokens(stats.totalInput)}`);
+    if (stats.totalOutput)
+      tokenParts.push(`↓${formatTokens(stats.totalOutput)}`);
+    if (stats.totalCacheRead)
+      tokenParts.push(`R${formatTokens(stats.totalCacheRead)}`);
+    if (stats.totalCacheWrite)
+      tokenParts.push(`W${formatTokens(stats.totalCacheWrite)}`);
+    return tokenParts.length > 0 ? tokenParts.join(" ") : undefined;
+  }
+
+  function buildCostSummary(
+    stats: TelegramUsageStats,
+    usesSubscription: boolean,
+  ): string | undefined {
+    if (!stats.totalCost && !usesSubscription) return undefined;
+    return `$${stats.totalCost.toFixed(3)}${usesSubscription ? " (sub)" : ""}`;
+  }
+
+  function buildContextSummary(
+    ctx: ExtensionContext,
+    activeModel: Model<any> | undefined,
+  ): string {
+    const usage = ctx.getContextUsage();
+    if (!usage) return "unknown";
+    const contextWindow =
+      usage.contextWindow ?? activeModel?.contextWindow ?? 0;
+    const percent =
+      usage.percent !== null ? `${usage.percent.toFixed(1)}%` : "?";
+    return `${percent}/${formatTokens(contextWindow)}`;
+  }
+
+  function buildStatusHtml(ctx: ExtensionContext): string {
+    const stats = collectUsageStats(ctx);
+    const activeModel = getCurrentTelegramModel(ctx);
+    const usesSubscription = activeModel
+      ? ctx.modelRegistry.isUsingOAuth(activeModel)
+      : false;
+    const lines: string[] = [];
+    const usageSummary = buildUsageSummary(stats);
+    const costSummary = buildCostSummary(stats, usesSubscription);
+    if (usageSummary) {
+      lines.push(buildStatusRow("Usage", usageSummary));
+    }
+    if (costSummary) {
+      lines.push(buildStatusRow("Cost", costSummary));
+    }
+    lines.push(
+      buildStatusRow("Context", buildContextSummary(ctx, activeModel)),
+    );
+    if (lines.length === 0) {
+      lines.push(buildStatusRow("Status", "No usage data yet."));
+    }
+    return lines.join("\n");
+  }
+
+  // --- Turn Queue & Message Dispatch ---
+
+  function extractTelegramMessageText(message: TelegramMessage): string {
+    return (message.text || message.caption || "").trim();
+  }
+
+  function extractTelegramMessagesText(messages: TelegramMessage[]): string {
+    return messages
+      .map(extractTelegramMessageText)
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  function extractFirstTelegramMessageText(
+    messages: TelegramMessage[],
+  ): string {
+    return messages.map(extractTelegramMessageText).find(Boolean) ?? "";
+  }
+
+  function formatTelegramHistoryText(
+    rawText: string,
+    files: DownloadedTelegramFile[],
+  ): string {
+    let summary = rawText.length > 0 ? rawText : "(no text)";
+    if (files.length > 0) {
+      summary += `\nAttachments:`;
+      for (const file of files) {
+        summary += `\n- ${file.path}`;
+      }
+    }
+    return summary;
   }
 
   function collectTelegramFileInfos(
@@ -1607,555 +2289,6 @@ export default function (pi: ExtensionAPI) {
     return downloaded;
   }
 
-  async function promptForConfig(ctx: ExtensionContext): Promise<void> {
-    if (!ctx.hasUI || setupInProgress) return;
-    setupInProgress = true;
-    try {
-      const token = await ctx.ui.input(
-        "Telegram bot token",
-        "123456:ABCDEF...",
-      );
-      if (!token) return;
-
-      const nextConfig: TelegramConfig = { ...config, botToken: token.trim() };
-      const response = await fetch(
-        `https://api.telegram.org/bot${nextConfig.botToken}/getMe`,
-      );
-      const data = (await response.json()) as TelegramApiResponse<TelegramUser>;
-      if (!data.ok || !data.result) {
-        ctx.ui.notify(
-          data.description || "Invalid Telegram bot token",
-          "error",
-        );
-        return;
-      }
-
-      nextConfig.botId = data.result.id;
-      nextConfig.botUsername = data.result.username;
-      config = nextConfig;
-      await writeConfig(config);
-      ctx.ui.notify(
-        `Telegram bot connected: @${config.botUsername ?? "unknown"}`,
-        "info",
-      );
-      ctx.ui.notify(
-        "Send /start to your bot in Telegram to pair this extension with your account.",
-        "info",
-      );
-      await startPolling(ctx);
-      updateStatus(ctx);
-    } finally {
-      setupInProgress = false;
-    }
-  }
-
-  async function stopPolling(): Promise<void> {
-    stopTypingLoop();
-    pollingController?.abort();
-    pollingController = undefined;
-    await pollingPromise?.catch(() => undefined);
-    pollingPromise = undefined;
-  }
-
-  async function answerCallbackQuery(
-    callbackQueryId: string,
-    text?: string,
-  ): Promise<void> {
-    try {
-      await callTelegram<boolean>(
-        "answerCallbackQuery",
-        text
-          ? { callback_query_id: callbackQueryId, text }
-          : { callback_query_id: callbackQueryId },
-      );
-    } catch {
-      // ignore
-    }
-  }
-
-  async function registerTelegramBotCommands(): Promise<void> {
-    const commands: TelegramBotCommand[] = [
-      {
-        command: "start",
-        description: "Show help and pair the Telegram bridge",
-      },
-      {
-        command: "status",
-        description: "Show model, usage, cost, and context status",
-      },
-      { command: "model", description: "Open the interactive model selector" },
-      { command: "compact", description: "Compact the current pi session" },
-      { command: "stop", description: "Abort the current pi task" },
-    ];
-    await callTelegram<boolean>("setMyCommands", { commands });
-  }
-
-  function getCurrentTelegramModel(
-    ctx: ExtensionContext,
-  ): Model<any> | undefined {
-    return currentTelegramModel ?? ctx.model;
-  }
-
-  async function getModelMenuState(
-    chatId: number,
-    ctx: ExtensionContext,
-  ): Promise<TelegramModelMenuState> {
-    const settingsManager = SettingsManager.create(ctx.cwd);
-    await settingsManager.reload();
-    ctx.modelRegistry.refresh();
-    const activeModel = getCurrentTelegramModel(ctx);
-    const availableModels = ctx.modelRegistry.getAvailable();
-    const allModels = sortScopedModels(
-      availableModels.map((model) => ({ model })),
-      activeModel,
-    );
-    const cliScopedModels = getCliScopedModelPatterns();
-    const configuredScopedModels =
-      cliScopedModels ?? settingsManager.getEnabledModels() ?? [];
-    const scopedModels =
-      configuredScopedModels.length > 0
-        ? sortScopedModels(
-            resolveScopedModelPatterns(configuredScopedModels, availableModels),
-            activeModel,
-          )
-        : [];
-    let note: string | undefined;
-    if (configuredScopedModels.length > 0 && scopedModels.length === 0) {
-      note = cliScopedModels
-        ? "No CLI scoped models matched the current auth configuration. Showing all available models."
-        : "No scoped models matched the current auth configuration. Showing all available models.";
-    }
-    return {
-      chatId,
-      messageId: 0,
-      page: 0,
-      scope: scopedModels.length > 0 ? "scoped" : "all",
-      scopedModels,
-      allModels,
-      note,
-      mode: "status",
-    };
-  }
-
-  function buildThinkingMenuText(ctx: ExtensionContext): string {
-    const activeModel = getCurrentTelegramModel(ctx);
-    const lines = ["Choose a thinking level"];
-    if (activeModel) {
-      lines.push(`Model: ${getCanonicalModelId(activeModel)}`);
-    }
-    lines.push(`Current: ${pi.getThinkingLevel()}`);
-    return lines.join("\n");
-  }
-
-  function buildModelMenuReplyMarkup(
-    state: TelegramModelMenuState,
-    currentModel: Model<any> | undefined,
-  ): {
-    inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
-  } {
-    const items = getModelMenuItems(state);
-    const pageCount = Math.max(
-      1,
-      Math.ceil(items.length / TELEGRAM_MODEL_PAGE_SIZE),
-    );
-    state.page = Math.max(0, Math.min(state.page, pageCount - 1));
-    const start = state.page * TELEGRAM_MODEL_PAGE_SIZE;
-    const pageItems = items.slice(start, start + TELEGRAM_MODEL_PAGE_SIZE);
-    const rows = pageItems.map((entry, index) => [
-      {
-        text: formatScopedModelButtonText(entry, currentModel),
-        callback_data: `model:pick:${start + index}`,
-      },
-    ]);
-    if (pageCount > 1) {
-      const previousPage = state.page === 0 ? pageCount - 1 : state.page - 1;
-      const nextPage = state.page === pageCount - 1 ? 0 : state.page + 1;
-      rows.push([
-        { text: "⬅️", callback_data: `model:page:${previousPage}` },
-        { text: `${state.page + 1}/${pageCount}`, callback_data: "model:noop" },
-        { text: "➡️", callback_data: `model:page:${nextPage}` },
-      ]);
-    }
-    if (state.scopedModels.length > 0) {
-      rows.push([
-        {
-          text: state.scope === "scoped" ? "✅ Scoped" : "Scoped",
-          callback_data: "model:scope:scoped",
-        },
-        {
-          text: state.scope === "all" ? "✅ All" : "All",
-          callback_data: "model:scope:all",
-        },
-      ]);
-    }
-    return { inline_keyboard: rows };
-  }
-
-  function buildThinkingMenuReplyMarkup(ctx: ExtensionContext): {
-    inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
-  } {
-    const currentThinkingLevel = pi.getThinkingLevel();
-    return {
-      inline_keyboard: THINKING_LEVELS.map((level) => [
-        {
-          text: level === currentThinkingLevel ? `✅ ${level}` : level,
-          callback_data: `thinking:set:${level}`,
-        },
-      ]),
-    };
-  }
-
-  function buildStatusReplyMarkup(ctx: ExtensionContext): {
-    inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
-  } {
-    const activeModel = getCurrentTelegramModel(ctx);
-    const rows: Array<Array<{ text: string; callback_data: string }>> = [];
-    rows.push([
-      {
-        text: formatStatusButtonLabel(
-          "Model",
-          activeModel ? getCanonicalModelId(activeModel) : "unknown",
-        ),
-        callback_data: "status:model",
-      },
-    ]);
-    if (activeModel?.reasoning) {
-      rows.push([
-        {
-          text: formatStatusButtonLabel("Thinking", pi.getThinkingLevel()),
-          callback_data: "status:thinking",
-        },
-      ]);
-    }
-    return { inline_keyboard: rows };
-  }
-
-  async function updateModelMenuMessage(
-    state: TelegramModelMenuState,
-    ctx: ExtensionContext,
-  ): Promise<void> {
-    state.mode = "model";
-    const activeModel = getCurrentTelegramModel(ctx);
-    await callTelegram("editMessageText", {
-      chat_id: state.chatId,
-      message_id: state.messageId,
-      text: "<b>Choose a model:</b>",
-      parse_mode: "HTML",
-      reply_markup: buildModelMenuReplyMarkup(state, activeModel),
-    });
-  }
-
-  async function updateThinkingMenuMessage(
-    state: TelegramModelMenuState,
-    ctx: ExtensionContext,
-  ): Promise<void> {
-    state.mode = "thinking";
-    await callTelegram("editMessageText", {
-      chat_id: state.chatId,
-      message_id: state.messageId,
-      text: buildThinkingMenuText(ctx),
-      reply_markup: buildThinkingMenuReplyMarkup(ctx),
-    });
-  }
-
-  async function showStatusMessage(
-    state: TelegramModelMenuState,
-    ctx: ExtensionContext,
-  ): Promise<void> {
-    state.mode = "status";
-    const [rendered] = renderTelegramMessage(buildStatusHtml(ctx), {
-      mode: "html",
-    });
-    await callTelegram("editMessageText", {
-      chat_id: state.chatId,
-      message_id: state.messageId,
-      text: rendered?.text ?? "",
-      parse_mode: rendered?.parseMode,
-      reply_markup: buildStatusReplyMarkup(ctx),
-    });
-  }
-
-  async function sendStatusMessage(
-    chatId: number,
-    replyToMessageId: number,
-    ctx: ExtensionContext,
-  ): Promise<void> {
-    if (!ctx.isIdle()) {
-      await sendTextReply(
-        chatId,
-        replyToMessageId,
-        "Cannot open status while pi is busy. Send /stop first.",
-      );
-      return;
-    }
-    const state = await getModelMenuState(chatId, ctx);
-    const [rendered] = renderTelegramMessage(buildStatusHtml(ctx), {
-      mode: "html",
-    });
-    const sent = await callTelegram<TelegramSentMessage>("sendMessage", {
-      chat_id: chatId,
-      text: rendered?.text ?? "",
-      parse_mode: rendered?.parseMode,
-      reply_markup: buildStatusReplyMarkup(ctx),
-    });
-    state.messageId = sent.message_id;
-    state.mode = "status";
-    modelMenus.set(sent.message_id, state);
-  }
-
-  async function openModelMenu(
-    chatId: number,
-    replyToMessageId: number,
-    ctx: ExtensionContext,
-  ): Promise<void> {
-    if (!ctx.isIdle()) {
-      await sendTextReply(
-        chatId,
-        replyToMessageId,
-        "Cannot switch model while pi is busy. Send /stop first.",
-      );
-      return;
-    }
-    const state = await getModelMenuState(chatId, ctx);
-    if (state.allModels.length === 0) {
-      await sendTextReply(
-        chatId,
-        replyToMessageId,
-        "No available models with configured auth.",
-      );
-      return;
-    }
-    const activeModel = getCurrentTelegramModel(ctx);
-    const sent = await callTelegram<TelegramSentMessage>("sendMessage", {
-      chat_id: chatId,
-      text: "<b>Choose a model:</b>",
-      parse_mode: "HTML",
-      reply_markup: buildModelMenuReplyMarkup(state, activeModel),
-    });
-    state.messageId = sent.message_id;
-    state.mode = "model";
-    modelMenus.set(sent.message_id, state);
-  }
-
-  async function handleAuthorizedTelegramCallbackQuery(
-    query: TelegramCallbackQuery,
-    ctx: ExtensionContext,
-  ): Promise<void> {
-    const messageId = query.message?.message_id;
-    if (!messageId || !query.data) {
-      await answerCallbackQuery(query.id);
-      return;
-    }
-    const state = modelMenus.get(messageId);
-    if (!state) {
-      await answerCallbackQuery(query.id, "Interactive message expired.");
-      return;
-    }
-    if (query.data === "status:model") {
-      await updateModelMenuMessage(state, ctx);
-      await answerCallbackQuery(query.id);
-      return;
-    }
-    if (query.data === "status:thinking") {
-      const activeModel = getCurrentTelegramModel(ctx);
-      if (!activeModel?.reasoning) {
-        await answerCallbackQuery(
-          query.id,
-          "This model has no reasoning controls.",
-        );
-        return;
-      }
-      await updateThinkingMenuMessage(state, ctx);
-      await answerCallbackQuery(query.id);
-      return;
-    }
-    if (query.data.startsWith("thinking:set:")) {
-      const level = query.data.slice("thinking:set:".length);
-      if (!isThinkingLevel(level)) {
-        await answerCallbackQuery(query.id, "Invalid thinking level.");
-        return;
-      }
-      const activeModel = getCurrentTelegramModel(ctx);
-      if (!activeModel?.reasoning) {
-        await answerCallbackQuery(
-          query.id,
-          "This model has no reasoning controls.",
-        );
-        return;
-      }
-      pi.setThinkingLevel(level);
-      await showStatusMessage(state, ctx);
-      await answerCallbackQuery(query.id, `Thinking: ${pi.getThinkingLevel()}`);
-      return;
-    }
-    if (!query.data.startsWith("model:")) {
-      await answerCallbackQuery(query.id);
-      return;
-    }
-    const [, action, value] = query.data.split(":");
-    if (action === "noop") {
-      await answerCallbackQuery(query.id);
-      return;
-    }
-    if (action === "scope") {
-      if (value !== "all" && value !== "scoped") {
-        await answerCallbackQuery(query.id, "Unknown model scope.");
-        return;
-      }
-      if (value === state.scope) {
-        await answerCallbackQuery(query.id);
-        return;
-      }
-      state.scope = value;
-      state.page = 0;
-      await updateModelMenuMessage(state, ctx);
-      await answerCallbackQuery(
-        query.id,
-        state.scope === "scoped" ? "Scoped models" : "All models",
-      );
-      return;
-    }
-    if (action === "page") {
-      const page = Number(value);
-      if (!Number.isFinite(page)) {
-        await answerCallbackQuery(query.id, "Invalid page.");
-        return;
-      }
-      if (page === state.page) {
-        await answerCallbackQuery(query.id);
-        return;
-      }
-      state.page = page;
-      await updateModelMenuMessage(state, ctx);
-      await answerCallbackQuery(query.id);
-      return;
-    }
-    if (action === "pick") {
-      const index = Number(value);
-      if (!Number.isFinite(index)) {
-        await answerCallbackQuery(query.id, "Invalid model selection.");
-        return;
-      }
-      const items = getModelMenuItems(state);
-      const selection = items[index];
-      if (!selection) {
-        await answerCallbackQuery(
-          query.id,
-          "Selected model is no longer available.",
-        );
-        return;
-      }
-      if (!ctx.isIdle()) {
-        await answerCallbackQuery(query.id, "Pi is busy. Send /stop first.");
-        return;
-      }
-      const activeModel = getCurrentTelegramModel(ctx);
-      if (modelsMatch(selection.model, activeModel)) {
-        if (
-          selection.thinkingLevel &&
-          selection.thinkingLevel !== pi.getThinkingLevel()
-        ) {
-          pi.setThinkingLevel(selection.thinkingLevel);
-        }
-        await showStatusMessage(state, ctx);
-        await answerCallbackQuery(query.id, `Model: ${selection.model.id}`);
-        return;
-      }
-      try {
-        const changed = await pi.setModel(selection.model);
-        if (changed === false) {
-          await answerCallbackQuery(query.id, "Model is not available.");
-          return;
-        }
-        currentTelegramModel = selection.model;
-        if (selection.thinkingLevel) {
-          pi.setThinkingLevel(selection.thinkingLevel);
-        }
-        await showStatusMessage(state, ctx);
-        await answerCallbackQuery(
-          query.id,
-          `Switched to ${selection.model.id}`,
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        await answerCallbackQuery(query.id, message);
-      }
-      return;
-    }
-    await answerCallbackQuery(query.id);
-  }
-
-  function buildStatusHtml(ctx: ExtensionContext): string {
-    let totalInput = 0;
-    let totalOutput = 0;
-    let totalCacheRead = 0;
-    let totalCacheWrite = 0;
-    let totalCost = 0;
-    for (const entry of ctx.sessionManager.getEntries()) {
-      if (entry.type !== "message" || entry.message.role !== "assistant")
-        continue;
-      totalInput += entry.message.usage.input;
-      totalOutput += entry.message.usage.output;
-      totalCacheRead += entry.message.usage.cacheRead;
-      totalCacheWrite += entry.message.usage.cacheWrite;
-      totalCost += entry.message.usage.cost.total;
-    }
-    const activeModel = getCurrentTelegramModel(ctx);
-    const usage = ctx.getContextUsage();
-    const lines: string[] = [];
-    const tokenParts: string[] = [];
-    if (totalInput) tokenParts.push(`↑${formatTokens(totalInput)}`);
-    if (totalOutput) tokenParts.push(`↓${formatTokens(totalOutput)}`);
-    if (totalCacheRead) tokenParts.push(`R${formatTokens(totalCacheRead)}`);
-    if (totalCacheWrite) tokenParts.push(`W${formatTokens(totalCacheWrite)}`);
-    if (tokenParts.length > 0) {
-      lines.push(
-        `<b>Usage:</b> <code>${escapeHtml(tokenParts.join(" "))}</code>`,
-      );
-    }
-    const usingSubscription = activeModel
-      ? ctx.modelRegistry.isUsingOAuth(activeModel)
-      : false;
-    if (totalCost || usingSubscription) {
-      lines.push(
-        `<b>Cost:</b> <code>${escapeHtml(
-          `$${totalCost.toFixed(3)}${usingSubscription ? " (sub)" : ""}`,
-        )}</code>`,
-      );
-    }
-    if (usage) {
-      const contextWindow =
-        usage.contextWindow ?? activeModel?.contextWindow ?? 0;
-      const percent =
-        usage.percent !== null ? `${usage.percent.toFixed(1)}%` : "?";
-      lines.push(
-        `<b>Context:</b> <code>${escapeHtml(
-          `${percent}/${formatTokens(contextWindow)}`,
-        )}</code>`,
-      );
-    } else {
-      lines.push(`<b>Context:</b> <code>unknown</code>`);
-    }
-    if (lines.length === 0) {
-      lines.push(`<b>Status:</b> <code>No usage data yet.</code>`);
-    }
-    return lines.join("\n");
-  }
-
-  function formatTelegramHistoryText(
-    rawText: string,
-    files: DownloadedTelegramFile[],
-  ): string {
-    let summary = rawText.length > 0 ? rawText : "(no text)";
-    if (files.length > 0) {
-      summary += `\nAttachments:`;
-      for (const file of files) {
-        summary += `\n- ${file.path}`;
-      }
-    }
-    return summary;
-  }
-
   async function createTelegramTurn(
     messages: TelegramMessage[],
     historyTurns: PendingTelegramTurn[] = [],
@@ -2163,10 +2296,7 @@ export default function (pi: ExtensionAPI) {
     const firstMessage = messages[0];
     if (!firstMessage)
       throw new Error("Missing Telegram message for turn creation");
-    const rawText = messages
-      .map((message) => (message.text || message.caption || "").trim())
-      .filter(Boolean)
-      .join("\n\n");
+    const rawText = extractTelegramMessagesText(messages);
     const files = await buildTelegramFiles(messages);
     const content: Array<TextContent | ImageContent> = [];
     let prompt = `${TELEGRAM_PREFIX}`;
@@ -2211,113 +2341,125 @@ export default function (pi: ExtensionAPI) {
     };
   }
 
-  async function dispatchAuthorizedTelegramMessages(
+  async function handleStopCommand(
+    message: TelegramMessage,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    if (currentAbort) {
+      if (queuedTelegramTurns.length > 0) {
+        preserveQueuedTurnsAsHistory = true;
+      }
+      currentAbort();
+      updateStatus(ctx);
+      await sendTextReply(
+        message.chat.id,
+        message.message_id,
+        "Aborted current turn.",
+      );
+      return;
+    }
+    await sendTextReply(message.chat.id, message.message_id, "No active turn.");
+  }
+
+  async function handleCompactCommand(
+    message: TelegramMessage,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    if (!ctx.isIdle()) {
+      await sendTextReply(
+        message.chat.id,
+        message.message_id,
+        "Cannot compact while pi is busy. Send /stop first.",
+      );
+      return;
+    }
+    ctx.compact({
+      onComplete: () => {
+        void sendTextReply(
+          message.chat.id,
+          message.message_id,
+          "Compaction completed.",
+        );
+      },
+      onError: (error) => {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        void sendTextReply(
+          message.chat.id,
+          message.message_id,
+          `Compaction failed: ${errorMessage}`,
+        );
+      },
+    });
+    await sendTextReply(
+      message.chat.id,
+      message.message_id,
+      "Compaction started.",
+    );
+  }
+
+  async function handleStatusCommand(
+    message: TelegramMessage,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    await sendStatusMessage(message.chat.id, message.message_id, ctx);
+  }
+
+  async function handleModelCommand(
+    message: TelegramMessage,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    await openModelMenu(message.chat.id, message.message_id, ctx);
+  }
+
+  async function handleHelpCommand(
+    message: TelegramMessage,
+    commandName: string,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    let helpText =
+      "Send me a message and I will forward it to pi. Commands: /status, /model, /compact, /stop.";
+    if (commandName === "start") {
+      try {
+        await registerTelegramBotCommands();
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        helpText += `\n\nWarning: failed to register bot commands menu: ${errorMessage}`;
+      }
+    }
+    await sendTextReply(message.chat.id, message.message_id, helpText);
+    if (config.allowedUserId === undefined && message.from) {
+      config.allowedUserId = message.from.id;
+      await writeConfig(config);
+      updateStatus(ctx);
+    }
+  }
+
+  async function handleTelegramCommand(
+    commandName: string | undefined,
+    message: TelegramMessage,
+    ctx: ExtensionContext,
+  ): Promise<boolean> {
+    if (!commandName) return false;
+    const handlers: Partial<Record<string, () => Promise<void>>> = {
+      stop: () => handleStopCommand(message, ctx),
+      compact: () => handleCompactCommand(message, ctx),
+      status: () => handleStatusCommand(message, ctx),
+      model: () => handleModelCommand(message, ctx),
+      help: () => handleHelpCommand(message, commandName, ctx),
+      start: () => handleHelpCommand(message, commandName, ctx),
+    };
+    const handler = handlers[commandName];
+    if (!handler) return false;
+    await handler();
+    return true;
+  }
+
+  async function enqueueTelegramTurn(
     messages: TelegramMessage[],
     ctx: ExtensionContext,
   ): Promise<void> {
-    const firstMessage = messages[0];
-    if (!firstMessage) return;
-    const rawText =
-      messages
-        .map((message) => (message.text || message.caption || "").trim())
-        .find((text) => text.length > 0) || "";
-    const command = parseTelegramCommand(rawText);
-    const commandName = command?.name;
-    if (commandName === "stop") {
-      if (currentAbort) {
-        if (queuedTelegramTurns.length > 0) {
-          preserveQueuedTurnsAsHistory = true;
-        }
-        currentAbort();
-        updateStatus(ctx);
-        await sendTextReply(
-          firstMessage.chat.id,
-          firstMessage.message_id,
-          "Aborted current turn.",
-        );
-      } else {
-        await sendTextReply(
-          firstMessage.chat.id,
-          firstMessage.message_id,
-          "No active turn.",
-        );
-      }
-      return;
-    }
-
-    if (commandName === "compact") {
-      if (!ctx.isIdle()) {
-        await sendTextReply(
-          firstMessage.chat.id,
-          firstMessage.message_id,
-          "Cannot compact while pi is busy. Send /stop first.",
-        );
-        return;
-      }
-      ctx.compact({
-        onComplete: () => {
-          void sendTextReply(
-            firstMessage.chat.id,
-            firstMessage.message_id,
-            "Compaction completed.",
-          );
-        },
-        onError: (error) => {
-          const message =
-            error instanceof Error ? error.message : String(error);
-          void sendTextReply(
-            firstMessage.chat.id,
-            firstMessage.message_id,
-            `Compaction failed: ${message}`,
-          );
-        },
-      });
-      await sendTextReply(
-        firstMessage.chat.id,
-        firstMessage.message_id,
-        "Compaction started.",
-      );
-      return;
-    }
-
-    if (commandName === "status") {
-      await sendStatusMessage(
-        firstMessage.chat.id,
-        firstMessage.message_id,
-        ctx,
-      );
-      return;
-    }
-
-    if (commandName === "model") {
-      await openModelMenu(firstMessage.chat.id, firstMessage.message_id, ctx);
-      return;
-    }
-
-    if (commandName === "help" || commandName === "start") {
-      let helpText = `Send me a message and I will forward it to pi. Commands: /status, /model, /compact, /stop.`;
-      if (commandName === "start") {
-        try {
-          await registerTelegramBotCommands();
-        } catch (error) {
-          const message =
-            error instanceof Error ? error.message : String(error);
-          helpText += `\n\nWarning: failed to register bot commands menu: ${message}`;
-        }
-      }
-      await sendTextReply(
-        firstMessage.chat.id,
-        firstMessage.message_id,
-        helpText,
-      );
-      if (config.allowedUserId === undefined && firstMessage.from) {
-        config.allowedUserId = firstMessage.from.id;
-        await writeConfig(config);
-        updateStatus(ctx);
-      }
-      return;
-    }
-
     const historyTurns = preserveQueuedTurnsAsHistory
       ? queuedTelegramTurns.splice(0)
       : [];
@@ -2325,10 +2467,22 @@ export default function (pi: ExtensionAPI) {
     const turn = await createTelegramTurn(messages, historyTurns);
     queuedTelegramTurns.push(turn);
     updateStatus(ctx);
-    if (ctx.isIdle()) {
-      startTypingLoop(ctx, turn.chatId);
-      pi.sendUserMessage(turn.content);
-    }
+    if (!ctx.isIdle()) return;
+    startTypingLoop(ctx, turn.chatId);
+    pi.sendUserMessage(turn.content);
+  }
+
+  async function dispatchAuthorizedTelegramMessages(
+    messages: TelegramMessage[],
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    const firstMessage = messages[0];
+    if (!firstMessage) return;
+    const rawText = extractFirstTelegramMessageText(messages);
+    const commandName = parseTelegramCommand(rawText)?.name;
+    const handled = await handleTelegramCommand(commandName, firstMessage, ctx);
+    if (handled) return;
+    await enqueueTelegramTurn(messages, ctx);
   }
 
   async function handleAuthorizedTelegramMessage(
@@ -2353,6 +2507,17 @@ export default function (pi: ExtensionAPI) {
     await dispatchAuthorizedTelegramMessages([message], ctx);
   }
 
+  async function pairTelegramUserIfNeeded(
+    userId: number,
+    ctx: ExtensionContext,
+  ): Promise<boolean> {
+    if (config.allowedUserId !== undefined) return false;
+    config.allowedUserId = userId;
+    await writeConfig(config);
+    updateStatus(ctx);
+    return true;
+  }
+
   async function handleUpdate(
     update: TelegramUpdate,
     ctx: ExtensionContext,
@@ -2360,18 +2525,10 @@ export default function (pi: ExtensionAPI) {
     if (update.callback_query) {
       const query = update.callback_query;
       const message = query.message;
-      if (
-        !message ||
-        message.chat.type !== "private" ||
-        !query.from ||
-        query.from.is_bot
-      )
+      if (!message || message.chat.type !== "private" || query.from.is_bot) {
         return;
-      if (config.allowedUserId === undefined) {
-        config.allowedUserId = query.from.id;
-        await writeConfig(config);
-        updateStatus(ctx);
       }
+      await pairTelegramUserIfNeeded(query.from.id, ctx);
       if (query.from.id !== config.allowedUserId) {
         await answerCallbackQuery(
           query.id,
@@ -2388,12 +2545,11 @@ export default function (pi: ExtensionAPI) {
       message.chat.type !== "private" ||
       !message.from ||
       message.from.is_bot
-    )
+    ) {
       return;
-    if (config.allowedUserId === undefined) {
-      config.allowedUserId = message.from.id;
-      await writeConfig(config);
-      updateStatus(ctx);
+    }
+    const pairedNow = await pairTelegramUserIfNeeded(message.from.id, ctx);
+    if (pairedNow) {
       await sendTextReply(
         message.chat.id,
         message.message_id,
@@ -2409,6 +2565,16 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     await handleAuthorizedTelegramMessage(message, ctx);
+  }
+
+  // --- Polling ---
+
+  async function stopPolling(): Promise<void> {
+    stopTypingLoop();
+    pollingController?.abort();
+    pollingController = undefined;
+    await pollingPromise?.catch(() => undefined);
+    pollingPromise = undefined;
   }
 
   async function pollLoop(
@@ -2486,6 +2652,8 @@ export default function (pi: ExtensionAPI) {
     });
     updateStatus(ctx);
   }
+
+  // --- Extension Registration ---
 
   pi.registerTool({
     name: "telegram_attach",
@@ -2584,6 +2752,8 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // --- Lifecycle Hooks ---
+
   pi.on("session_start", async (_event, ctx) => {
     config = await readConfig();
     currentTelegramModel = ctx.model;
@@ -2627,11 +2797,7 @@ export default function (pi: ExtensionAPI) {
       const nextTurn = queuedTelegramTurns.shift();
       if (nextTurn) {
         activeTelegramTurn = { ...nextTurn };
-        previewState = {
-          mode: draftSupport === "unsupported" ? "message" : "draft",
-          pendingText: "",
-          lastSentText: "",
-        };
+        previewState = createPreviewState();
         startTypingLoop(ctx);
       }
     }
@@ -2652,21 +2818,13 @@ export default function (pi: ExtensionAPI) {
         await finalizePreview(activeTelegramTurn.chatId);
       }
     }
-    previewState = {
-      mode: draftSupport === "unsupported" ? "message" : "draft",
-      pendingText: "",
-      lastSentText: "",
-    };
+    previewState = createPreviewState();
   });
 
   pi.on("message_update", async (event, _ctx) => {
     if (!activeTelegramTurn || !isAssistantMessage(event.message)) return;
     if (!previewState) {
-      previewState = {
-        mode: draftSupport === "unsupported" ? "message" : "draft",
-        pendingText: "",
-        lastSentText: "",
-      };
+      previewState = createPreviewState();
     }
     previewState.pendingText = getMessageText(event.message);
     schedulePreviewFlush(activeTelegramTurn.chatId);
