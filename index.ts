@@ -1406,6 +1406,25 @@ export default function (pi: ExtensionAPI) {
     };
   }
 
+  function isTelegramMessageNotModifiedError(error: unknown): boolean {
+    return (
+      error instanceof Error &&
+      error.message.includes("message is not modified")
+    );
+  }
+
+  async function editTelegramMessageText(
+    body: Record<string, unknown>,
+  ): Promise<"edited" | "unchanged"> {
+    try {
+      await callTelegram("editMessageText", body);
+      return "edited";
+    } catch (error) {
+      if (isTelegramMessageNotModifiedError(error)) return "unchanged";
+      throw error;
+    }
+  }
+
   async function sendRenderedChunks(
     chatId: number,
     chunks: TelegramRenderedChunk[],
@@ -1433,7 +1452,7 @@ export default function (pi: ExtensionAPI) {
   ): Promise<number | undefined> {
     if (chunks.length === 0) return messageId;
     const [firstChunk, ...remainingChunks] = chunks;
-    await callTelegram("editMessageText", {
+    await editTelegramMessageText({
       chat_id: chatId,
       message_id: messageId,
       text: firstChunk.text,
@@ -1508,7 +1527,7 @@ export default function (pi: ExtensionAPI) {
       state.lastSentText = truncated;
       return;
     }
-    await callTelegram("editMessageText", {
+    await editTelegramMessageText({
       chat_id: chatId,
       message_id: state.messageId,
       text: truncated,
