@@ -30,6 +30,12 @@ In short: this fork is no longer just a repackaged copy of upstream; it is a fea
 
 ## Install
 
+From npm once published:
+
+```bash
+pi install @llblab/pi-telegram
+```
+
 From git:
 
 ```bash
@@ -39,7 +45,7 @@ pi install git:github.com/llblab/pi-telegram
 Or for a single run:
 
 ```bash
-pi -e git:github.com/llblab/pi-telegram
+pi -e @llblab/pi-telegram
 ```
 
 ## Configure

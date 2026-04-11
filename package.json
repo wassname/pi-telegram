@@ -1,5 +1,5 @@
 {
-  "name": "pi-telegram",
+  "name": "@llblab/pi-telegram",
   "version": "0.2.0",
   "private": false,
   "description": "Telegram DM bridge extension for pi",
@@ -22,6 +22,9 @@
   },
   "scripts": {
     "test": "node --experimental-strip-types --test tests/*.test.ts"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "pi": {
     "extensions": [
