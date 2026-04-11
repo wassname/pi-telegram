@@ -1,5 +1,10 @@
-import test from "node:test";
+/**
+ * Regression tests for Telegram setup prompt defaults
+ * Covers token-prefill priority across stored config, environment variables, and placeholder fallback
+ */
+
 import assert from "node:assert/strict";
+import test from "node:test";
 
 import { __telegramTestUtils } from "../index.ts";
 
@@ -15,7 +20,6 @@ test("Bot token input prefers stored config over env vars", () => {
   );
   assert.equal(value, "stored-token");
 });
-
 
 test("Bot token input prefers the first configured Telegram env var when no config exists", () => {
   const value = __telegramTestUtils.getTelegramBotTokenInputDefault({

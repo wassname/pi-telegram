@@ -11,16 +11,42 @@
 
 ## Runtime Structure
 
-The implementation currently lives in `index.ts` and is organized by logical sections rather than physical modules.
+`index.ts` remains the extension entrypoint and composition layer. Reusable runtime logic is split into flat domain files under `/lib` rather than into a deep local module tree.
 
-Main runtime areas:
+Domain grouping rule: prefer cohesive domain files over atomizing every helper into its own file. A `shared` domain is allowed only for types or constants that genuinely span multiple bridge domains.
 
-- Telegram API types and local bridge state
-- Generic utilities and Markdown/rendering helpers
-- Message delivery, previews, and attachment sending
-- Interactive model/status menu state and callback handling
-- Queue management for pending and active Telegram turns
-- Polling loop and pi lifecycle-hook integration
+Naming rule: because the repository already scopes this codebase to Telegram, extracted module and test filenames use bare domain names such as `api.ts`, `queue.ts`, `updates.ts`, and `queue.test.ts` rather than repeating `telegram-*` in every filename.
+
+Current runtime areas include:
+
+- Telegram API types and local bridge state in `index.ts`
+- Queueing and queue-runtime helpers in `/lib/queue.ts`
+- Reply, preview, preview-finalization, reply-transport, and rendered-message delivery helpers in `/lib/replies.ts`
+- Polling request, stop-condition, and long-poll loop helpers in `/lib/polling.ts`
+- Telegram API/config helpers and lazy bot-token client wrappers in `/lib/api.ts`
+- Telegram turn-building helpers in `/lib/turns.ts`
+- Telegram media/text extraction helpers in `/lib/media.ts`
+- Telegram updates extraction, authorization, flow, execution-planning, direct execute-from-update routing, and runtime helpers in `/lib/updates.ts`
+- Telegram attachment queueing and delivery helpers in `/lib/attachments.ts`
+- Telegram tool, command, and lifecycle-hook registration helpers in `/lib/registration.ts`
+- Setup/token prompt helpers in `/lib/setup.ts`
+- Markdown and Telegram message rendering helpers in `/lib/rendering.ts`
+- Status rendering helpers in `/lib/status.ts`
+- Menu/model-resolution, menu-state construction, pure menu-page derivation, pure menu render-payload builders, menu-message runtime, callback parsing, callback entry handling, callback mutation helpers, full model-callback planning and execution, interface-polished callback effect ports, status-thinking callback handling, and UI helpers in `/lib/menu.ts`
+- Model-switch guard, continuation, and restart helpers in `/lib/model-switch.ts`
+- Telegram API-bound reply transport wiring and broader event-side orchestration in `index.ts`
+- Additional domains can be extracted into `/lib/*.ts` as the bridge grows, while keeping `index.ts` as the single entrypoint
+- Mirrored domain regression coverage lives in `/tests/*.test.ts` using the same bare domain naming scheme
+
+## Configuration UX
+
+`/telegram-setup` uses a progressive-enhancement flow for the bot token prompt:
+
+1. Show the locally saved token from `~/.pi/agent/telegram.json` when one already exists
+2. Otherwise use the first configured environment variable from the supported Telegram token list
+3. Fall back to the example placeholder when no real value exists
+
+Because `ctx.ui.input()` only exposes placeholder text, the bridge uses `ctx.ui.editor()` whenever a real default value must appear already filled in.
 
 ## Message And Queue Flow
 
@@ -36,6 +62,15 @@ Main runtime areas:
 ### Queue Safety Model
 
 The bridge keeps its own Telegram queue and does not rely only on pi's internal pending-message state.
+
+Queued items now use two explicit dimensions:
+
+- `kind`: prompt vs control
+- `queueLane`: control vs priority vs default
+
+This lets synthetic control actions and Telegram prompts share one stable ordering model while still rendering distinctly in status output.
+
+A dispatched prompt remains in the queue until `agent_start` consumes it. That keeps the active Telegram turn bound correctly for previews, attachments, abort handling, and final reply delivery.
 
 Dispatch is gated by:
 
@@ -59,6 +94,9 @@ Key rules:
 
 - Rich text should render cleanly in Telegram chats
 - Real code blocks must remain literal and escaped
+- Markdown tables should keep their internal separators but drop the outer left and right borders when rendered as monospace blocks so narrow Telegram clients keep more usable width
+- Unordered Markdown lists should render with a monospace `-` marker and ordered Markdown lists should render with monospace numeric markers so list indentation stays more predictable on narrow Telegram clients
+- Nested Markdown quotes should flatten into one Telegram blockquote with added non-breaking-space indentation because Telegram does not render nested blockquotes reliably
 - Long replies must be split below Telegram's 4096-character limit
 - Chunking should avoid breaking HTML structure where possible
 - Preview rendering is intentionally simpler than final rich rendering
@@ -83,9 +121,9 @@ The bridge exposes Telegram-side session controls in addition to regular chat fo
 
 Current operator controls include:
 
-- `/status` for model, usage, cost, and context visibility
+- `/status` for model, usage, cost, and context visibility, queued as a high-priority control item when needed
 - Inline status buttons for model and thinking adjustments
-- `/model` for interactive model selection, including in-flight restart of the active Telegram-owned run on a newly selected model
+- `/model` for interactive model selection, queued as a high-priority control item when needed and supporting in-flight restart of the active Telegram-owned run on a newly selected model
 - `/compact` for Telegram-triggered pi session compaction when the bridge is idle
 - Queue reactions using `👍` and `👎`
 

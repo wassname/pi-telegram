@@ -22,7 +22,9 @@
 
 ## 3. Project Topology
 
-- `/index.ts`: Main extension runtime, Telegram API integration, queueing, rendering, previews, menus, and tool wiring
+- `/index.ts`: Main extension entrypoint and runtime composition layer for the bridge
+- `/lib/*.ts`: Flat domain modules for reusable runtime logic. Favor domain files such as queueing/runtime, replies, polling, updates, attachments, registration/hooks, Telegram API/config, turns, media, setup, rendering, menu/status/model-resolution support, and other cohesive bridge subsystems; use `shared` only when a type or constant truly spans multiple domains
+- `/tests/*.test.ts`: Domain-mirrored regression suites that follow the same flat naming as `/lib`
 - `/docs/README.md`: Documentation index for technical project docs
 - `/docs/architecture.md`: Runtime and subsystem overview for the bridge
 - `/README.md`: User-facing project entry point, install guide, and fork summary
@@ -40,9 +42,10 @@
 
 ## 5. Architectural Decisions
 
-- The extension ships as a single runtime file for simple pi packaging, so logical sections inside `index.ts` are the primary module boundaries
+- `index.ts` stays the single extension entrypoint, while reusable runtime logic should be split into flat domain files under `/lib`; prefer domain-oriented grouping over atomizing every helper into its own file, and use `shared` sparingly for genuinely cross-domain types or constants
 - The bridge is session-local and intentionally pairs with a single allowed Telegram user per config
-- Telegram queue state is tracked locally and must stay aligned with pi agent lifecycle hooks; dispatch must respect active turns, pending dispatch, compaction, and pi pending-message state
+- Telegram queue state is tracked locally and must stay aligned with pi agent lifecycle hooks; queued items now have explicit kinds and lanes so prompt turns and synthetic control actions can share one ordering model, while dispatch still respects active turns, pending dispatch, compaction, and pi pending-message state
+- Prompt items should remain in the queue until `agent_start` consumes the dispatched turn; removing them earlier breaks active-turn binding, preview delivery, and end-of-turn follow-up behavior
 - In-flight `/model` switching is supported only for Telegram-owned active turns and is implemented as set-model plus synthetic continuation turn plus abort; if a tool call is active, the abort is delayed until that tool finishes instead of interrupting the tool mid-flight
 - Telegram replies render through Telegram HTML, not raw Markdown; real code blocks must stay literal and escaped
 - `telegram_attach` is the canonical outbound file-delivery path for Telegram-originated requests
@@ -50,21 +53,25 @@
 ## 6. Engineering Conventions
 
 - Treat queue handling, compaction interaction, and lifecycle-hook state transitions as regression-prone areas; validate them after changing dispatch logic
-- Treat Markdown rendering as Telegram-specific output work, not generic Markdown rendering; preserve literal code content and avoid HTML chunk splits that break tags
+- Treat Markdown rendering as Telegram-specific output work, not generic Markdown rendering; preserve literal code content, avoid HTML chunk splits that break tags, prefer width-efficient monospace table and list formatting for narrow clients, and flatten nested Markdown quotes into indented single-blockquote output because Telegram does not render nested blockquotes reliably
 - Keep comments and user-facing docs in English unless the surrounding file already follows another convention
-- Prefer targeted edits inside `index.ts` over broad rewrites unless a section boundary is being intentionally restructured
+- Each project `.ts` file should start with a short multi-line responsibility header comment that explains the file boundary to future maintainers
+- Name extracted `/lib` modules and mirrored `/tests` suites by bare domain when the repository already supplies the Telegram scope; prefer `api.ts`, `queue.ts`, `updates.ts`, and `queue.test.ts` over redundant `telegram-*` filename prefixes
+- Prefer targeted edits, keeping `index.ts` as the orchestration layer and moving reusable logic into flat `/lib` domain modules when a subsystem becomes large enough to earn extraction; current extracted domains include queueing/runtime decisions, replies, polling, updates, attachments, registration and lifecycle-hook binding, Telegram API/config support, turn-building, media extraction, setup, rendering, status rendering, menu/model-resolution/UI support, and model-switch support
 
 ## 7. Operational Conventions
 
 - When Telegram-visible behavior changes, sync `README.md` and the relevant `/docs` entry in the same pass
 - When durable runtime constraints or repeat bug patterns emerge, record them here instead of burying them in changelog prose
 - When fork identity changes, keep `README.md`, package metadata, and docs aligned so the published package does not point back at stale upstream coordinates
+- Work only inside this repository during development tasks; updating the installed Pi extension checkout is a separate manual operator step, not part of normal in-repo implementation work
 
 ## 8. Integration Protocols
 
 - Telegram API methods currently used include polling, message editing, draft streaming, callback queries, reactions, file download, and media upload endpoints
 - pi integration depends on lifecycle hooks such as `before_agent_start`, `agent_start`, `message_start`, `message_update`, and `agent_end`
 - `ctx.ui.input()` provides placeholder text rather than an editable prefilled value; when a real default must appear already filled in, prefer `ctx.ui.editor()`
+- For `/telegram-setup`, prefer the locally saved bot token over environment variables on repeat setup runs; env vars are the bootstrap path when no local token exists
 - Status/model/thinking controls are driven through Telegram inline keyboards and callback queries
 - Inbound files may become pi image inputs; outbound files must flow through `telegram_attach`
 

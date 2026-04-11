@@ -2,8 +2,6 @@
 
 ![pi-telegram screenshot](screenshot.png)
 
-> Full pi build session: [View the session transcript](https://pi.dev/session/#14acfe07b7844c8abec55ed9fbddc17f), which captures the full pi session in which `pi-telegram` was built.
-
 Telegram DM bridge for pi.
 
 This repository is a fork of the original [`badlogic/pi-telegram`](https://github.com/badlogic/pi-telegram).
@@ -22,10 +20,11 @@ Compared to upstream commit `cb34008`, this fork significantly extends and harde
 
 - Better Telegram control UI, including an improved `/status` view with inline buttons for model and thinking selection
 - Interactive model selection improvements, including scoped model lists, thinking-level control for reasoning-capable models, and in-flight restart on a newly selected model for active Telegram-owned runs
-- Queueing and interaction upgrades, including queue previews, reaction-based prioritization/removal, media-group handling, and safer dispatch behavior
-- Markdown and reply rendering improvements, with richer formatting support and multiple fixes for incorrect Telegram rendering and chunking edge cases
+- Queueing and interaction upgrades, including queue previews, reaction-based prioritization/removal, media-group handling, high-priority control actions, and safer dispatch behavior
+- Markdown and reply rendering improvements, with richer formatting support, narrow-client-friendly table/list rendering, quote compatibility fixes, and multiple fixes for incorrect Telegram rendering and chunking edge cases
 - Streaming, attachment, and delivery workflow hardening, including more robust preview updates and file handling
 - General runtime polish, bug fixes, and refactors across pairing, command handling, and Telegram session behavior
+- Cleaner internal domain layout, with flat `/lib/*.ts` modules and mirrored `/tests/*.test.ts` suites that use repo-scoped domain names instead of redundant `telegram-*` filename prefixes
 
 In short: this fork is no longer just a repackaged copy of upstream; it is a feature-expanded and bug-fixed Telegram frontend for pi.
 
@@ -104,8 +103,8 @@ Chat with your bot in Telegram DMs.
 
 Additional fork-specific controls:
 
-- `/status` now has a richer view with inline buttons for model and thinking controls
-- `/model` opens the interactive model selector and can restart the active Telegram-owned run on the newly selected model, waiting for the current tool call to finish when needed
+- `/status` now has a richer view with inline buttons for model and thinking controls, and joins the high-priority control queue when pi is busy
+- `/model` opens the interactive model selector, joins the high-priority control queue when pi is busy, and can restart the active Telegram-owned run on the newly selected model, waiting for the current tool call to finish when needed
 - `/compact` starts session compaction when pi and the Telegram queue are idle
 - Queue reactions: `👍` prioritizes a waiting turn, `👎` removes it
 
