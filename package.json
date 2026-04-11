@@ -1,8 +1,8 @@
 {
   "name": "@llblab/pi-telegram",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": false,
-  "description": "Telegram DM bridge extension for pi",
+  "description": "Better Telegram DM bridge extension for pi",
   "type": "module",
   "keywords": [
     "pi-package",
