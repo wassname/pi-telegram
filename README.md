@@ -165,7 +165,7 @@ The pi status bar shows queued Telegram turns as compact previews, for example:
 +3: [summarize this image…, write a shell script…, 📎 2 attachments]
 ```
 
-Each preview is limited to at most 5 words or 40 characters.
+Each preview is limited to at most 4 words or 32 characters.
 
 ### Reprioritize or discard queued messages
 
