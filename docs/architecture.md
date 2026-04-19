@@ -30,9 +30,9 @@ Current runtime areas include:
 - Telegram attachment queueing and delivery helpers in `/lib/attachments.ts`
 - Telegram tool, command, and lifecycle-hook registration helpers in `/lib/registration.ts`
 - Setup/token prompt helpers in `/lib/setup.ts`
-- Markdown and Telegram message rendering helpers in `/lib/rendering.ts`
-- Status rendering helpers in `/lib/status.ts`
-- Menu/model-resolution, menu-state construction, pure menu-page derivation, pure menu render-payload builders, menu-message runtime, callback parsing, callback entry handling, callback mutation helpers, full model-callback planning and execution, interface-polished callback effect ports, status-thinking callback handling, and UI helpers in `/lib/menu.ts`
+- Markdown, Telegram message rendering, and trace display block rendering helpers in `/lib/rendering.ts`
+- Status rendering helpers (including trace visibility indicator) in `/lib/status.ts`
+- Menu/model-resolution, menu-state construction, pure menu-page derivation, pure menu render-payload builders, menu-message runtime, callback parsing, callback entry handling, callback mutation helpers, full model-callback planning and execution, interface-polished callback effect ports, status-thinking callback handling, trace-toggle callback handling, and UI helpers in `/lib/menu.ts`
 - Model-switch guard, continuation, and restart helpers in `/lib/model-switch.ts`
 - Telegram API-bound reply transport wiring and broader event-side orchestration in `index.ts`
 - Additional domains can be extracted into `/lib/*.ts` as the bridge grows, while keeping `index.ts` as the single entrypoint
@@ -102,6 +102,12 @@ Key rules:
 - Preview rendering is intentionally simpler than final rich rendering
 
 The renderer is a Telegram-specific formatter, not a general Markdown engine, so rendering changes should be treated as regression-prone.
+
+### Trace Visibility
+
+When trace visibility is on (default), thinking blocks and tool-call blocks from the assistant are included in both streaming previews and final replies. During streaming, trace blocks appear as compact one-line summaries (e.g. `🧠 Thinking...`, `🔧 tool_name`). In the final transcript, they render as quoted Markdown blocks with more detail.
+
+Trace visibility is toggled per session via `/trace` or the inline button on the `/status` menu. The state is stored in `traceVisible` (boolean, default `true`) and flows through the rendering helpers in `/lib/rendering.ts`.
 
 ## Streaming And Delivery
 

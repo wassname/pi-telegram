@@ -55,21 +55,15 @@ export function buildTelegramAssistantPreviewText(
   traceVisible: boolean,
 ): string {
   const sections: string[] = [];
-  const text = blocks
-    .filter((block): block is Extract<TelegramAssistantDisplayBlock, { type: "text" }> => block.type === "text")
-    .map((block) => block.text)
-    .join("")
-    .trim();
-  if (text) {
-    sections.push(text);
-  }
-  if (traceVisible) {
-    const traceLines = blocks
-      .map(renderTracePreviewLine)
-      .filter((line): line is string => !!line);
-    if (traceLines.length > 0) {
-      sections.push(traceLines.join("\n"));
+  for (const block of blocks) {
+    if (block.type === "text") {
+      const trimmed = block.text.trim();
+      if (trimmed) sections.push(trimmed);
+      continue;
     }
+    if (!traceVisible) continue;
+    const line = renderTracePreviewLine(block);
+    if (line) sections.push(line);
   }
   return sections.join("\n\n").trim();
 }

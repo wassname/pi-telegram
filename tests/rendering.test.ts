@@ -27,8 +27,10 @@ test("Assistant trace helpers build compact previews and fuller transcripts", ()
   assert.equal(
     buildTelegramAssistantPreviewText(blocks as never, true),
     [
-      "Answer intro\n\nFinal answer.",
-      '[thinking] Need to inspect the config first.\n[tool] read_config {"path":"config.json"}',
+      "Answer intro",
+      "[thinking] Need to inspect the config first.",
+      '[tool] read_config {"path":"config.json"}',
+      "Final answer.",
     ].join("\n\n"),
   );
   assert.equal(

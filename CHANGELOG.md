@@ -2,6 +2,7 @@
 
 ## Current
 
+- `[Trace Visibility]` Added `/trace` command and status-menu inline button to toggle visibility of thinking and tool-call blocks in Telegram replies. When enabled (default), streaming previews show compact one-line trace summaries and final replies include quoted trace detail. Impact: operators can see what the model is thinking and which tools it calls without leaving Telegram.
 - `[Queue UI]` Marked liked high-priority queued Telegram turns with `⬆` in the pi status-bar queue preview. Impact: operators can now distinguish reaction-promoted turns from normal queued prompts at a glance.
 - `[Docs]` Added short responsibility header comments to every project `.ts` file. Impact: file boundaries are easier to understand while navigating the growing `/lib` split.
 - `[Naming]` Renamed extracted domain modules and mirrored regression suites to use repo-scoped bare domain filenames such as `api.ts`, `queue.ts`, and `queue.test.ts` instead of repeating `telegram-*` in every path. Impact: the internal topology is easier to scan and stays aligned with the repository-level Telegram scope.

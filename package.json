@@ -21,7 +21,7 @@
     "url": "https://github.com/llblab/pi-telegram/issues"
   },
   "scripts": {
-    "test": "node --experimental-strip-types --test tests/*.test.ts"
+    "test": "node --experimental-strip-types --test --test-force-exit tests/*.test.ts"
   },
   "publishConfig": {
     "access": "public"

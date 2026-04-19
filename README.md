@@ -6,6 +6,9 @@ Telegram DM bridge for pi.
 
 This repository is a fork of the original [`badlogic/pi-telegram`](https://github.com/badlogic/pi-telegram).
 It started from upstream commit [`cb34008460b6c1ca036d92322f69d87f626be0fc`](https://github.com/badlogic/pi-telegram/commit/cb34008460b6c1ca036d92322f69d87f626be0fc) and has since diverged substantially.
+- then llblab did a bunch of work in llblab
+- then wassname:
+    - show tool calls and thinking
 
 ## Start Here
 
@@ -18,7 +21,7 @@ It started from upstream commit [`cb34008460b6c1ca036d92322f69d87f626be0fc`](htt
 
 Compared to upstream commit `cb34008`, this fork significantly extends and hardens the extension.
 
-- Better Telegram control UI, including an improved `/status` view with inline buttons for model and thinking selection
+- Better Telegram control UI, including an improved `/status` view with inline buttons for model and thinking selection, and trace visibility toggle for thinking/tool-call blocks
 - Interactive model selection improvements, including scoped model lists, thinking-level control for reasoning-capable models, and in-flight restart on a newly selected model for active Telegram-owned runs
 - Queueing and interaction upgrades, including queue previews, reaction-based prioritization/removal, media-group handling, high-priority control actions, and safer dispatch behavior
 - Markdown and reply rendering improvements, with richer formatting support, narrow-client-friendly table/list rendering, quote compatibility fixes, and multiple fixes for incorrect Telegram rendering and chunking edge cases
@@ -112,6 +115,7 @@ Additional fork-specific controls:
 - `/status` now has a richer view with inline buttons for model and thinking controls, and joins the high-priority control queue when pi is busy
 - `/model` opens the interactive model selector, applies idle selections immediately, joins the high-priority control queue when pi is busy, and can restart the active Telegram-owned run on the newly selected model, waiting for the current tool call to finish when needed
 - `/compact` starts session compaction when pi and the Telegram queue are idle
+- `/trace` toggles visibility of thinking and tool-call blocks in Telegram replies (on by default)
 - Queue reactions: `👍` prioritizes a waiting turn, `👎` removes it
 
 ### Send text

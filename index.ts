@@ -2022,6 +2022,12 @@ export default function (pi: ExtensionAPI) {
     onMessageStart: async (event, _ctx) => {
       const nextEvent = event as { message: AgentMessage };
       if (!activeTelegramTurn || !isAssistantMessage(nextEvent.message)) return;
+      {
+        const rawContent = (nextEvent.message as unknown as Record<string, unknown>).content;
+        const rawBlocks = Array.isArray(rawContent) ? rawContent : [];
+        const blockTypes = rawBlocks.map((b: Record<string, unknown>) => b?.type ?? "unknown");
+        console.log(`${TELEGRAM_PREFIX} [trace-debug] messageStart role=${(nextEvent.message as unknown as Record<string, unknown>).role} blockTypes=${JSON.stringify(blockTypes)}`);
+      }
       if (traceVisible) {
         if (activeTelegramMessageBlocks.length > 0) {
           activeTelegramTraceBlocks.push(...activeTelegramMessageBlocks);
@@ -2056,6 +2062,13 @@ export default function (pi: ExtensionAPI) {
         previewState = createPreviewState();
       }
       if (traceVisible) {
+        const rawContent = (nextEvent.message as unknown as Record<string, unknown>).content;
+        const rawBlocks = Array.isArray(rawContent) ? rawContent : [];
+        const blockTypes = rawBlocks.map((b: Record<string, unknown>) => b?.type ?? "unknown");
+        if (blockTypes.some((t: string) => t !== "text")) {
+          console.log(`${TELEGRAM_PREFIX} [trace-debug] message block types: ${JSON.stringify(blockTypes)}`);
+          console.log(`${TELEGRAM_PREFIX} [trace-debug] non-text blocks: ${JSON.stringify(rawBlocks.filter((b: Record<string, unknown>) => b?.type !== "text").map((b: Record<string, unknown>) => ({ type: b?.type, keys: Object.keys(b ?? {}) })))}`);
+        }
         activeTelegramMessageBlocks = getMessageBlocks(nextEvent.message);
         previewState.pendingText = buildTelegramAssistantPreviewText(
           getActiveTracePreviewBlocks(),
