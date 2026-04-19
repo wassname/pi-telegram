@@ -111,6 +111,10 @@ test("Menu helpers build model menu state and parse callback actions", () => {
     kind: "status",
     action: "model",
   });
+  assert.deepEqual(parseTelegramMenuCallbackAction("status:trace"), {
+    kind: "status",
+    action: "trace",
+  });
   assert.deepEqual(parseTelegramMenuCallbackAction("thinking:set:high"), {
     kind: "thinking:set",
     level: "high",
@@ -443,6 +447,7 @@ test("Menu helpers execute model callback actions across update, switch, and res
 
 test("Menu helpers handle status and thinking callback actions", async () => {
   const events: string[] = [];
+  let traceVisible = true;
   const reasoningModel = {
     provider: "openai",
     id: "gpt-5",
@@ -465,6 +470,41 @@ test("Menu helpers handle status and thinking callback actions", async () => {
         updateThinkingMenuMessage: async () => {
           events.push("status:thinking");
         },
+        updateStatusMessage: async () => {
+          events.push("status:update");
+        },
+        setTraceVisible: (nextTraceVisible) => {
+          traceVisible = nextTraceVisible;
+          events.push(`trace:${nextTraceVisible ? "on" : "off"}`);
+        },
+        getTraceVisible: () => traceVisible,
+        answerCallbackQuery: async (_id, text) => {
+          events.push(`answer:${text ?? ""}`);
+        },
+      },
+    ),
+    true,
+  );
+  assert.equal(
+    await handleTelegramStatusMenuCallbackAction(
+      "callback-trace",
+      "status:trace",
+      reasoningModel as never,
+      {
+        updateModelMenuMessage: async () => {
+          events.push("unexpected:model");
+        },
+        updateThinkingMenuMessage: async () => {
+          events.push("unexpected:thinking");
+        },
+        updateStatusMessage: async () => {
+          events.push("status:update");
+        },
+        setTraceVisible: (nextTraceVisible) => {
+          traceVisible = nextTraceVisible;
+          events.push(`trace:${nextTraceVisible ? "on" : "off"}`);
+        },
+        getTraceVisible: () => traceVisible,
         answerCallbackQuery: async (_id, text) => {
           events.push(`answer:${text ?? ""}`);
         },
@@ -504,6 +544,13 @@ test("Menu helpers handle status and thinking callback actions", async () => {
         updateThinkingMenuMessage: async () => {
           events.push("unexpected:thinking");
         },
+        updateStatusMessage: async () => {
+          events.push("unexpected:status");
+        },
+        setTraceVisible: () => {
+          events.push("unexpected:trace");
+        },
+        getTraceVisible: () => traceVisible,
         answerCallbackQuery: async (_id, text) => {
           events.push(`answer:${text ?? ""}`);
         },
@@ -513,10 +560,13 @@ test("Menu helpers handle status and thinking callback actions", async () => {
   );
   assert.equal(events[0], "status:model");
   assert.equal(events[1], "answer:");
-  assert.equal(events[2], "set:high");
+  assert.equal(events[2], "trace:off");
   assert.equal(events[3], "status:update");
-  assert.equal(events[4], "answer:Thinking: high");
-  assert.equal(events[5], "answer:This model has no reasoning controls.");
+  assert.equal(events[4], "answer:Trace: off");
+  assert.equal(events[5], "set:high");
+  assert.equal(events[6], "status:update");
+  assert.equal(events[7], "answer:Thinking: high");
+  assert.equal(events[8], "answer:This model has no reasoning controls.");
 });
 
 test("Menu helpers build pure render payloads before transport", () => {
@@ -536,6 +586,7 @@ test("Menu helpers build pure render payloads before transport", () => {
     "<b>Status</b>",
     modelA as never,
     "medium",
+    true,
   );
   assert.equal(modelPayload.nextMode, "model");
   assert.equal(modelPayload.text, "<b>Choose a model:</b>");
@@ -586,6 +637,7 @@ test("Menu helpers update and send interactive menu messages", async () => {
     "<b>Status</b>",
     modelA as never,
     "medium",
+    true,
     deps,
   );
   const sentStatusId = await sendTelegramStatusMessage(
@@ -593,6 +645,7 @@ test("Menu helpers update and send interactive menu messages", async () => {
     "<b>Status</b>",
     modelA as never,
     "medium",
+    true,
     deps,
   );
   const sentModelId = await sendTelegramModelMenuMessage(state, modelA as never, deps);
@@ -638,8 +691,9 @@ test("Menu helpers build model, thinking, and status UI payloads", () => {
     thinkingMarkup.inline_keyboard.some((row) => row[0]?.text === "✅ medium"),
     true,
   );
-  const statusMarkup = buildStatusReplyMarkup(modelA as never, "medium");
-  assert.equal(statusMarkup.inline_keyboard.length, 2);
-  const noReasoningMarkup = buildStatusReplyMarkup(modelB as never, "medium");
-  assert.equal(noReasoningMarkup.inline_keyboard.length, 1);
+  const statusMarkup = buildStatusReplyMarkup(modelA as never, "medium", true);
+  assert.equal(statusMarkup.inline_keyboard.length, 3);
+  assert.equal(statusMarkup.inline_keyboard[1]?.[0]?.callback_data, "status:trace");
+  const noReasoningMarkup = buildStatusReplyMarkup(modelB as never, "medium", false);
+  assert.equal(noReasoningMarkup.inline_keyboard.length, 2);
 });

@@ -8,10 +8,27 @@ import type {
   ExtensionCommandContext,
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
 
 import { queueTelegramAttachments } from "./attachments.ts";
 import type { PendingTelegramTurn } from "./queue.ts";
+
+function buildAttachmentParametersSchema(maxAttachmentsPerTurn: number) {
+  return {
+    type: "object",
+    properties: {
+      paths: {
+        type: "array",
+        items: {
+          type: "string",
+          description: "Local file path to attach",
+        },
+        minItems: 1,
+        maxItems: maxAttachmentsPerTurn,
+      },
+    },
+    required: ["paths"],
+  };
+}
 
 // --- Tool Registration ---
 
@@ -34,12 +51,7 @@ export function registerTelegramAttachmentTool(
     promptGuidelines: [
       "When handling a [telegram] message and the user asked for a file or generated artifact, call telegram_attach with the local path instead of only mentioning the path in text.",
     ],
-    parameters: Type.Object({
-      paths: Type.Array(
-        Type.String({ description: "Local file path to attach" }),
-        { minItems: 1, maxItems: deps.maxAttachmentsPerTurn },
-      ),
-    }),
+    parameters: buildAttachmentParametersSchema(deps.maxAttachmentsPerTurn),
     async execute(_toolCallId, params) {
       return queueTelegramAttachments({
         activeTurn: deps.getActiveTurn(),

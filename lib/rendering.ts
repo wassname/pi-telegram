@@ -5,6 +5,100 @@
 
 export const MAX_MESSAGE_LENGTH = 4096;
 
+export type TelegramAssistantDisplayBlock =
+  | { type: "text"; text: string }
+  | { type: "thinking"; text: string }
+  | { type: "tool_call"; name: string; argsText?: string };
+
+function truncateDisplayText(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function normalizePreviewInlineText(text: string): string {
+  return renderMarkdownPreviewText(text).replace(/\s+/g, " ").trim();
+}
+
+function renderTracePreviewLine(block: TelegramAssistantDisplayBlock): string | undefined {
+  if (block.type === "text") return undefined;
+  if (block.type === "thinking") {
+    const summary = normalizePreviewInlineText(block.text);
+    if (!summary) return undefined;
+    return `[thinking] ${truncateDisplayText(summary, 120)}`;
+  }
+  const parts = [`[tool] ${block.name}`];
+  if (block.argsText?.trim()) {
+    const summary = normalizePreviewInlineText(block.argsText);
+    if (summary) parts.push(summary);
+  }
+  return truncateDisplayText(parts.join(" "), 160);
+}
+
+function renderMarkdownQuote(text: string): string {
+  return text
+    .split(/\r?\n/)
+    .map((line) => `> ${line.length > 0 ? line : "\u00A0"}`)
+    .join("\n");
+}
+
+function renderToolArgsMarkdown(argsText: string): string {
+  const trimmed = argsText.trim();
+  if (trimmed.length === 0) return "";
+  if (trimmed.includes("\n") || trimmed.length > 120) {
+    return `\n\n\`\`\`json\n${trimmed}\n\`\`\``;
+  }
+  return ` ${"`"}${trimmed}${"`"}`;
+}
+
+export function buildTelegramAssistantPreviewText(
+  blocks: TelegramAssistantDisplayBlock[],
+  traceVisible: boolean,
+): string {
+  const sections: string[] = [];
+  const text = blocks
+    .filter((block): block is Extract<TelegramAssistantDisplayBlock, { type: "text" }> => block.type === "text")
+    .map((block) => block.text)
+    .join("")
+    .trim();
+  if (text) {
+    sections.push(text);
+  }
+  if (traceVisible) {
+    const traceLines = blocks
+      .map(renderTracePreviewLine)
+      .filter((line): line is string => !!line);
+    if (traceLines.length > 0) {
+      sections.push(traceLines.join("\n"));
+    }
+  }
+  return sections.join("\n\n").trim();
+}
+
+export function buildTelegramAssistantTranscriptMarkdown(
+  blocks: TelegramAssistantDisplayBlock[],
+  traceVisible: boolean,
+): string {
+  const sections: string[] = [];
+  for (const block of blocks) {
+    if (block.type === "text") {
+      const trimmed = block.text.trim();
+      if (trimmed) sections.push(trimmed);
+      continue;
+    }
+    if (!traceVisible) continue;
+    if (block.type === "thinking") {
+      const trimmed = block.text.trim();
+      if (!trimmed) continue;
+      sections.push(`**Thinking**\n${renderMarkdownQuote(trimmed)}`);
+      continue;
+    }
+    sections.push(
+      `**Tool call** ${"`"}${block.name}${"`"}${block.argsText ? renderToolArgsMarkdown(block.argsText) : ""}`,
+    );
+  }
+  return sections.join("\n\n").trim();
+}
+
 // --- Escaping ---
 
 function escapeHtml(text: string): string {

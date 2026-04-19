@@ -87,6 +87,7 @@ function buildContextSummary(
 export function buildStatusHtml(
   ctx: ExtensionContext,
   activeModel: Model<any> | undefined,
+  traceVisible: boolean,
 ): string {
   const stats = collectUsageStats(ctx);
   const usesSubscription = activeModel
@@ -102,6 +103,7 @@ export function buildStatusHtml(
     lines.push(buildStatusRow("Cost", costSummary));
   }
   lines.push(buildStatusRow("Context", buildContextSummary(ctx, activeModel)));
+  lines.push(buildStatusRow("Trace", traceVisible ? "on" : "off"));
   if (lines.length === 0) {
     lines.push(buildStatusRow("Status", "No usage data yet."));
   }

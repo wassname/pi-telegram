@@ -62,6 +62,8 @@ export interface TelegramMenuEffectPort {
   setCurrentModel: (model: Model<any>) => void;
   setThinkingLevel: (level: ThinkingLevel) => void;
   getCurrentThinkingLevel: () => ThinkingLevel;
+  setTraceVisible: (traceVisible: boolean) => void;
+  getTraceVisible: () => boolean;
   stagePendingModelSwitch: (selection: ScopedTelegramModel) => void;
   restartInterruptedTelegramTurn: (
     selection: ScopedTelegramModel,
@@ -70,7 +72,12 @@ export interface TelegramMenuEffectPort {
 
 export type TelegramStatusMenuCallbackDeps = Pick<
   TelegramMenuEffectPort,
-  "updateModelMenuMessage" | "updateThinkingMenuMessage" | "answerCallbackQuery"
+  | "updateModelMenuMessage"
+  | "updateThinkingMenuMessage"
+  | "updateStatusMessage"
+  | "setTraceVisible"
+  | "getTraceVisible"
+  | "answerCallbackQuery"
 >;
 
 export type TelegramThinkingMenuCallbackDeps = Pick<
@@ -121,7 +128,7 @@ export interface BuildTelegramModelMenuStateParams {
 
 export type TelegramMenuCallbackAction =
   | { kind: "ignore" }
-  | { kind: "status"; action: "model" | "thinking" }
+  | { kind: "status"; action: "model" | "thinking" | "trace" }
   | { kind: "thinking:set"; level: string }
   | {
       kind: "model";
@@ -451,6 +458,9 @@ export function parseTelegramMenuCallbackAction(
   if (data === "status:thinking") {
     return { kind: "status", action: "thinking" };
   }
+  if (data === "status:trace") {
+    return { kind: "status", action: "trace" };
+  }
   if (data?.startsWith("thinking:set:")) {
     return {
       kind: "thinking:set",
@@ -665,6 +675,16 @@ export async function handleTelegramStatusMenuCallbackAction(
     await deps.answerCallbackQuery(callbackQueryId);
     return true;
   }
+  if (action.kind === "status" && action.action === "trace") {
+    const nextTraceVisible = !deps.getTraceVisible();
+    deps.setTraceVisible(nextTraceVisible);
+    await deps.updateStatusMessage();
+    await deps.answerCallbackQuery(
+      callbackQueryId,
+      `Trace: ${nextTraceVisible ? "on" : "off"}`,
+    );
+    return true;
+  }
   if (!(action.kind === "status" && action.action === "thinking")) {
     return false;
   }
@@ -793,6 +813,7 @@ export function buildThinkingMenuReplyMarkup(
 export function buildStatusReplyMarkup(
   activeModel: Model<any> | undefined,
   currentThinkingLevel: ThinkingLevel,
+  traceVisible: boolean,
 ): TelegramReplyMarkup {
   const rows: Array<Array<{ text: string; callback_data: string }>> = [];
   rows.push([
@@ -802,6 +823,12 @@ export function buildStatusReplyMarkup(
         activeModel ? getCanonicalModelId(activeModel) : "unknown",
       ),
       callback_data: "status:model",
+    },
+  ]);
+  rows.push([
+    {
+      text: formatStatusButtonLabel("Trace", traceVisible ? "on" : "off"),
+      callback_data: "status:trace",
     },
   ]);
   if (activeModel?.reasoning) {
@@ -847,12 +874,17 @@ export function buildTelegramStatusMenuRenderPayload(
   statusText: string,
   activeModel: Model<any> | undefined,
   currentThinkingLevel: ThinkingLevel,
+  traceVisible: boolean,
 ): TelegramMenuRenderPayload {
   return {
     nextMode: "status",
     text: statusText,
     mode: "html",
-    replyMarkup: buildStatusReplyMarkup(activeModel, currentThinkingLevel),
+    replyMarkup: buildStatusReplyMarkup(
+      activeModel,
+      currentThinkingLevel,
+      traceVisible,
+    ),
   };
 }
 
@@ -897,12 +929,14 @@ export async function updateTelegramStatusMessage(
   statusText: string,
   activeModel: Model<any> | undefined,
   currentThinkingLevel: ThinkingLevel,
+  traceVisible: boolean,
   deps: TelegramMenuMessageRuntimeDeps,
 ): Promise<void> {
   const payload = buildTelegramStatusMenuRenderPayload(
     statusText,
     activeModel,
     currentThinkingLevel,
+    traceVisible,
   );
   state.mode = payload.nextMode;
   await deps.editInteractiveMessage(
@@ -919,12 +953,14 @@ export async function sendTelegramStatusMessage(
   statusText: string,
   activeModel: Model<any> | undefined,
   currentThinkingLevel: ThinkingLevel,
+  traceVisible: boolean,
   deps: TelegramMenuMessageRuntimeDeps,
 ): Promise<number | undefined> {
   const payload = buildTelegramStatusMenuRenderPayload(
     statusText,
     activeModel,
     currentThinkingLevel,
+    traceVisible,
   );
   state.mode = payload.nextMode;
   return deps.sendInteractiveMessage(
