@@ -643,7 +643,7 @@ export default function (pi: ExtensionAPI) {
       if (!text) return undefined;
       return { type: "thinking", text };
     }
-    if (candidate.type === "tool_call" || candidate.type === "tool_use") {
+    if (candidate.type === "tool_call" || candidate.type === "tool_use" || candidate.type === "toolCall") {
       const name =
         typeof candidate.name === "string"
           ? candidate.name
