@@ -101,7 +101,7 @@ import {
   getTelegramBotTokenInputDefault,
   getTelegramBotTokenPromptSpec,
 } from "./lib/setup.ts";
-import { buildStatusHtml } from "./lib/status.ts";
+import { buildStatusHtml, extractTurnCost, formatTurnCostLine } from "./lib/status.ts";
 import {
   buildTelegramPromptTurn,
   truncateTelegramQueueSummary,
@@ -1563,6 +1563,33 @@ export default function (pi: ExtensionAPI) {
     await sendTextReply(message.chat.id, message.message_id, "No active turn.");
   }
 
+  async function handleQuitCommand(
+    message: TelegramMessage,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    await sendTextReply(message.chat.id, message.message_id, "Shutting down pi session.");
+    ctx.shutdown();
+  }
+
+  async function handleShellCommand(
+    shellCmd: string,
+    message: TelegramMessage,
+    _ctx: ExtensionContext,
+  ): Promise<void> {
+    try {
+      const result = await pi.exec("sh", ["-c", shellCmd], { timeout: 30_000 });
+      const output = (result.stdout + result.stderr).trim();
+      const codeTag = result.code !== 0 ? ` (exit ${result.code})` : "";
+      const reply = output
+        ? `${output.slice(0, 3900)}${codeTag}`
+        : `(no output)${codeTag}`;
+      await sendTextReply(message.chat.id, message.message_id, reply);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await sendTextReply(message.chat.id, message.message_id, `Shell error: ${msg}`);
+    }
+  }
+
   async function handleCompactCommand(
     message: TelegramMessage,
     ctx: ExtensionContext,
@@ -1687,7 +1714,8 @@ export default function (pi: ExtensionAPI) {
     ctx: ExtensionContext,
   ): Promise<void> {
     let helpText =
-      "Send me a message and I will forward it to pi. Commands: /status, /trace, /model, /compact, /stop.";
+      "Send me a message and I will forward it to pi.\n\nLocal: /status, /trace, /model, /compact, /stop, /quit\nOther /commands and ! shell commands pass through to pi directly.";
+
     if (commandName === "start") {
       try {
         await registerTelegramBotCommands();
@@ -1719,6 +1747,8 @@ export default function (pi: ExtensionAPI) {
       model: () => handleModelCommand(message, ctx),
       help: () => handleHelpCommand(message, commandName, ctx),
       start: () => handleHelpCommand(message, commandName, ctx),
+      quit: () => handleQuitCommand(message, ctx),
+      exit: () => handleQuitCommand(message, ctx),
     };
     const handler = handlers[commandName];
     if (!handler) return false;
@@ -1748,9 +1778,21 @@ export default function (pi: ExtensionAPI) {
     const firstMessage = messages[0];
     if (!firstMessage) return;
     const rawText = extractFirstTelegramMessageText(messages);
+
+    // Handle ! shell commands directly via ctx.exec
+    const trimmedRaw = rawText.trimStart();
+    if (trimmedRaw.startsWith("!")) {
+      const shellCmd = trimmedRaw.slice(1).trim();
+      if (shellCmd) {
+        await handleShellCommand(shellCmd, firstMessage, ctx);
+        return;
+      }
+    }
+
     const commandName = parseTelegramCommand(rawText)?.name;
     const handled = await handleTelegramCommand(commandName, firstMessage, ctx);
     if (handled) return;
+
     await enqueueTelegramTurn(messages, ctx);
   }
 
@@ -2093,9 +2135,17 @@ export default function (pi: ExtensionAPI) {
       const assistant = turn
         ? extractAssistantSummary((event as { messages: AgentMessage[] }).messages)
         : { blocks: [] };
-      const finalText = traceVisible
+      let finalText = traceVisible
         ? buildTelegramAssistantTranscriptMarkdown(assistant.blocks, true)
         : assistant.text;
+      // Append per-turn cost/context footer when trace is on
+      if (traceVisible && turn && finalText) {
+        const turnCost = extractTurnCost((event as { messages: AgentMessage[] }).messages as any);
+        const usage = ctx.getContextUsage();
+        if (turnCost) {
+          finalText += `\n\n---\n${formatTurnCostLine(turnCost, usage?.percent ?? null)}`;
+        }
+      }
       const endPlan = buildTelegramAgentEndPlan({
         hasTurn: !!turn,
         stopReason: assistant.stopReason,
@@ -2104,6 +2154,18 @@ export default function (pi: ExtensionAPI) {
         preserveQueuedTurnsAsHistory,
       });
       if (!turn) {
+        // Notify about non-telegram turns when trace is on (scheduled prompts, system events, etc.)
+        if (traceVisible && config.allowedUserId) {
+          const nonTelegramAssistant = extractAssistantSummary((event as { messages: AgentMessage[] }).messages);
+          const summary = nonTelegramAssistant.text?.slice(0, 500);
+          const turnCost = extractTurnCost((event as { messages: AgentMessage[] }).messages as any);
+          const usage = ctx.getContextUsage();
+          const costLine = turnCost ? formatTurnCostLine(turnCost, usage?.percent ?? null) : undefined;
+          const parts = ["[non-telegram turn]"];
+          if (summary) parts.push(summary);
+          if (costLine) parts.push(`---\n${costLine}`);
+          void sendTextReply(config.allowedUserId, 0, parts.join("\n"));
+        }
         if (endPlan.shouldDispatchNext) {
           dispatchNextQueuedTelegramTurn(ctx);
         }

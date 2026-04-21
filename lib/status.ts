@@ -84,6 +84,45 @@ function buildContextSummary(
   return `${percent}/${formatTokens(contextWindow)}`;
 }
 
+export interface TurnCostInfo {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cost: number;
+}
+
+/**
+ * Extract per-turn cost/token info from the agent_end messages array.
+ * Returns undefined if no assistant messages with usage found.
+ */
+export function extractTurnCost(messages: Array<{ role?: string; usage?: { input: number; output: number; cacheRead: number; cost: { total: number } } }>): TurnCostInfo | undefined {
+  let input = 0, output = 0, cacheRead = 0, cost = 0;
+  let found = false;
+  for (const msg of messages) {
+    if (msg.role === "assistant" && msg.usage) {
+      input += msg.usage.input;
+      output += msg.usage.output;
+      cacheRead += msg.usage.cacheRead;
+      cost += msg.usage.cost.total;
+      found = true;
+    }
+  }
+  return found ? { input, output, cacheRead, cost } : undefined;
+}
+
+/**
+ * Format turn cost as a one-line summary for appending to trace replies.
+ */
+export function formatTurnCostLine(turnCost: TurnCostInfo, contextPercent: number | null): string {
+  const parts: string[] = [];
+  parts.push(`$${turnCost.cost.toFixed(3)}`);
+  const tokens = [`↑${formatTokens(turnCost.input)}`, `↓${formatTokens(turnCost.output)}`];
+  if (turnCost.cacheRead) tokens.push(`R${formatTokens(turnCost.cacheRead)}`);
+  parts.push(tokens.join(" "));
+  if (contextPercent !== null) parts.push(`ctx ${contextPercent.toFixed(0)}%`);
+  return parts.join(" | ");
+}
+
 export function buildStatusHtml(
   ctx: ExtensionContext,
   activeModel: Model<any> | undefined,

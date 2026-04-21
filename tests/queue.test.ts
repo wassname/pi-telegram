@@ -1255,6 +1255,7 @@ test("Extension runtime finalizes a drafted preview into the final Telegram repl
       isIdle: () => true,
       hasPendingMessages: () => false,
       abort: () => {},
+      getContextUsage: () => ({ tokens: 10000, contextWindow: 200000, percent: 5.0 }),
     } as never;
     await handlers.get("session_start")?.({}, ctx);
     await commands.get("telegram-connect")?.handler("", ctx);

@@ -65,8 +65,9 @@ export function buildTelegramTurnPrompt(options: {
   files: DownloadedTelegramTurnFileLike[];
   historyTurns?: Pick<PendingTelegramTurn, "historyText">[];
 }): string {
-  // Let pi handle `!` shell commands natively - don't prepend [telegram] prefix
-  let prompt = options.rawText.trimStart().startsWith("!") ? "" : options.telegramPrefix;
+  // Let pi handle `!` shell commands and `/` slash commands natively - don't prepend [telegram] prefix
+  const raw = options.rawText.trimStart();
+  let prompt = (raw.startsWith("!") || raw.startsWith("/")) ? "" : options.telegramPrefix;
   if ((options.historyTurns?.length ?? 0) > 0) {
     prompt +=
       "\n\nEarlier Telegram messages arrived after an aborted turn. Treat them as prior user messages, in order:";
