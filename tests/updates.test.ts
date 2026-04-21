@@ -54,11 +54,8 @@ test("Update helpers extract deleted message ids from Telegram update variants",
   );
 });
 
-test("Update routing classifies authorization state for pair, allow, and deny", () => {
-  assert.deepEqual(getTelegramAuthorizationState(10), {
-    kind: "pair",
-    userId: 10,
-  });
+test("Update routing classifies authorization state for allow and deny", () => {
+  assert.deepEqual(getTelegramAuthorizationState(10, undefined), { kind: "deny" });
   assert.deepEqual(getTelegramAuthorizationState(10, 10), { kind: "allow" });
   assert.deepEqual(getTelegramAuthorizationState(10, 11), { kind: "deny" });
 });
@@ -142,7 +139,7 @@ test("Update flow returns authorized callback and message actions", () => {
   assert.equal(messageAction.kind, "message");
   assert.deepEqual(
     messageAction.kind === "message" ? messageAction.authorization : undefined,
-    { kind: "pair", userId: 9 },
+    { kind: "deny" },
   );
 });
 
@@ -180,7 +177,6 @@ test("Update execution plan maps callback and message authorization to side-effe
       from: { id: 1, is_bot: false },
       message: { chat: { type: "private" } },
     },
-    shouldPair: false,
     shouldDeny: true,
   });
   const messagePlan = buildTelegramUpdateExecutionPlan({
@@ -189,11 +185,9 @@ test("Update execution plan maps callback and message authorization to side-effe
       chat: { type: "private" },
       from: { id: 2, is_bot: false },
     },
-    authorization: { kind: "pair", userId: 2 },
+    authorization: { kind: "allow" },
   });
   assert.equal(messagePlan.kind, "message");
-  assert.equal(messagePlan.shouldPair, true);
-  assert.equal(messagePlan.shouldNotifyPaired, true);
   assert.equal(messagePlan.shouldDeny, false);
 });
 
@@ -246,7 +240,6 @@ test("Update runtime executes delete and reaction plans through the right side e
       handleAuthorizedTelegramReactionUpdate: async () => {
         events.push("reaction");
       },
-      pairTelegramUserIfNeeded: async () => false,
       answerCallbackQuery: async () => {},
       handleAuthorizedTelegramCallbackQuery: async () => {},
       sendTextReply: async () => undefined,
@@ -256,7 +249,7 @@ test("Update runtime executes delete and reaction plans through the right side e
   assert.deepEqual(events, ["media:1,2", "queue:1,2"]);
 });
 
-test("Update runtime can execute directly from raw updates", async () => {
+test("Update runtime denies messages when allowedUserId is undefined", async () => {
   const events: string[] = [];
   await executeTelegramUpdate(
     {
@@ -273,9 +266,8 @@ test("Update runtime can execute directly from raw updates", async () => {
       removePendingMediaGroupMessages: () => {},
       removeQueuedTelegramTurnsByMessageIds: () => 0,
       handleAuthorizedTelegramReactionUpdate: async () => {},
-      pairTelegramUserIfNeeded: async () => {
-        events.push("pair");
-        return true;
+      onDeniedUserId: (userId) => {
+        events.push(`denied:${userId}`);
       },
       answerCallbackQuery: async () => {},
       handleAuthorizedTelegramCallbackQuery: async () => {},
@@ -288,10 +280,10 @@ test("Update runtime can execute directly from raw updates", async () => {
       },
     },
   );
-  assert.deepEqual(events, ["pair", "reply:Telegram bridge paired with this account.", "message"]);
+  assert.deepEqual(events, ["denied:7", "reply:This bot is not authorized for your account."]);
 });
 
-test("Update runtime handles callback deny and message pair flows", async () => {
+test("Update runtime handles callback deny and message deny flows", async () => {
   const events: string[] = [];
   await executeTelegramUpdatePlan(
     {
@@ -301,7 +293,6 @@ test("Update runtime handles callback deny and message pair flows", async () => 
         from: { id: 1, is_bot: false },
         message: { chat: { type: "private" } },
       },
-      shouldPair: true,
       shouldDeny: true,
     },
     {
@@ -309,9 +300,8 @@ test("Update runtime handles callback deny and message pair flows", async () => 
       removePendingMediaGroupMessages: () => {},
       removeQueuedTelegramTurnsByMessageIds: () => 0,
       handleAuthorizedTelegramReactionUpdate: async () => {},
-      pairTelegramUserIfNeeded: async (userId) => {
-        events.push(`pair:${userId}`);
-        return true;
+      onDeniedUserId: (userId) => {
+        events.push(`denied:${userId}`);
       },
       answerCallbackQuery: async (id, text) => {
         events.push(`answer:${id}:${text}`);
@@ -336,8 +326,6 @@ test("Update runtime handles callback deny and message pair flows", async () => 
         from: { id: 2, is_bot: false },
         message_id: 9,
       },
-      shouldPair: true,
-      shouldNotifyPaired: true,
       shouldDeny: false,
     },
     {
@@ -345,7 +333,6 @@ test("Update runtime handles callback deny and message pair flows", async () => 
       removePendingMediaGroupMessages: () => {},
       removeQueuedTelegramTurnsByMessageIds: () => 0,
       handleAuthorizedTelegramReactionUpdate: async () => {},
-      pairTelegramUserIfNeeded: async () => true,
       answerCallbackQuery: async () => {},
       handleAuthorizedTelegramCallbackQuery: async () => {},
       sendTextReply: async (chatId, replyToMessageId, text) => {
@@ -358,9 +345,8 @@ test("Update runtime handles callback deny and message pair flows", async () => 
     },
   );
   assert.deepEqual(events, [
-    "pair:1",
+    "denied:1",
     "answer:cb:This bot is not authorized for your account.",
-    "reply:7:9:Telegram bridge paired with this account.",
     "message",
   ]);
 });

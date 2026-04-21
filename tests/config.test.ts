@@ -78,3 +78,28 @@ test("Bot token prompt uses placeholder input when no prefill exists", () => {
     value: "123456:ABCDEF...",
   });
 });
+
+test("readAllowedUserIdFromEnv returns undefined when env var is not set", () => {
+  assert.equal(__telegramTestUtils.readAllowedUserIdFromEnv({}), undefined);
+  assert.equal(__telegramTestUtils.readAllowedUserIdFromEnv({ TELEGRAM_ALLOWED_USER_ID: "  " }), undefined);
+});
+
+test("readAllowedUserIdFromEnv parses a valid positive integer", () => {
+  assert.equal(__telegramTestUtils.readAllowedUserIdFromEnv({ TELEGRAM_ALLOWED_USER_ID: "123456789" }), 123456789);
+  assert.equal(__telegramTestUtils.readAllowedUserIdFromEnv({ TELEGRAM_ALLOWED_USER_ID: "  42  " }), 42);
+});
+
+test("readAllowedUserIdFromEnv throws on non-integer or non-positive value", () => {
+  assert.throws(
+    () => __telegramTestUtils.readAllowedUserIdFromEnv({ TELEGRAM_ALLOWED_USER_ID: "notanumber" }),
+    /not a valid Telegram user ID/,
+  );
+  assert.throws(
+    () => __telegramTestUtils.readAllowedUserIdFromEnv({ TELEGRAM_ALLOWED_USER_ID: "0" }),
+    /not a valid Telegram user ID/,
+  );
+  assert.throws(
+    () => __telegramTestUtils.readAllowedUserIdFromEnv({ TELEGRAM_ALLOWED_USER_ID: "-5" }),
+    /not a valid Telegram user ID/,
+  );
+});

@@ -43,7 +43,7 @@
 ## 5. Architectural Decisions
 
 - `index.ts` stays the single extension entrypoint, while reusable runtime logic should be split into flat domain files under `/lib`; prefer domain-oriented grouping over atomizing every helper into its own file, and use `shared` sparingly for genuinely cross-domain types or constants
-- The bridge is session-local and intentionally pairs with a single allowed Telegram user per config
+- The bridge is session-local and restricted to a single pre-configured allowed Telegram user; `allowedUserId` must be set before polling starts, either via `TELEGRAM_ALLOWED_USER_ID` env var or the `/telegram-setup` prompt; there is no auto-pair-on-first-DM behavior
 - Telegram queue state is tracked locally and must stay aligned with pi agent lifecycle hooks; queued items now have explicit kinds and lanes so prompt turns and synthetic control actions can share one ordering model, while dispatch still respects active turns, pending dispatch, compaction, and pi pending-message state
 - Prompt items should remain in the queue until `agent_start` consumes the dispatched turn; removing them earlier breaks active-turn binding, preview delivery, and end-of-turn follow-up behavior
 - In-flight `/model` switching is supported only for Telegram-owned active turns and is implemented as set-model plus synthetic continuation turn plus abort; if a tool call is active, the abort is delayed until that tool finishes instead of interrupting the tool mid-flight

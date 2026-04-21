@@ -2,6 +2,10 @@
 
 ## Current
 
+- `[Security]` Removed auto-pair-on-first-DM behavior. The bot now requires `allowedUserId` to be set before polling starts. Configure it via `TELEGRAM_ALLOWED_USER_ID` env var or the updated `/telegram-setup` prompt (which now asks for a numeric user ID after the bot token). The env var takes precedence over the saved config on every session start. Denied senders get an auth error reply; their numeric ID is also logged to the pi TUI as a warning. Breaking change: fresh installs require explicit configuration; existing installs with `allowedUserId` already in `telegram.json` continue to work unchanged.
+
+
+
 - `[Trace Visibility]` Added `/trace` command and status-menu inline button to toggle visibility of thinking and tool-call blocks in Telegram replies. When enabled (default), streaming previews show compact one-line trace summaries and final replies include quoted trace detail. Impact: operators can see what the model is thinking and which tools it calls without leaving Telegram.
 - `[Queue UI]` Marked liked high-priority queued Telegram turns with `⬆` in the pi status-bar queue preview. Impact: operators can now distinguish reaction-promoted turns from normal queued prompts at a glance.
 - `[Docs]` Added short responsibility header comments to every project `.ts` file. Impact: file boundaries are easier to understand while navigating the growing `/lib` split.

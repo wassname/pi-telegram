@@ -95,7 +95,6 @@ export interface TelegramUpdateRoutingLike {
 }
 
 export type TelegramAuthorizationState =
-  | { kind: "pair"; userId: number }
   | { kind: "allow" }
   | { kind: "deny" };
 
@@ -103,9 +102,6 @@ export function getTelegramAuthorizationState(
   userId: number,
   allowedUserId?: number,
 ): TelegramAuthorizationState {
-  if (allowedUserId === undefined) {
-    return { kind: "pair", userId };
-  }
   if (userId === allowedUserId) {
     return { kind: "allow" };
   }
@@ -214,14 +210,11 @@ export type TelegramUpdateExecutionPlan =
   | {
       kind: "callback";
       query: TelegramCallbackQueryLike;
-      shouldPair: boolean;
       shouldDeny: boolean;
     }
   | {
       kind: "message";
       message: TelegramMessageLike & { from: TelegramUserLike };
-      shouldPair: boolean;
-      shouldNotifyPaired: boolean;
       shouldDeny: boolean;
     };
 
@@ -239,15 +232,12 @@ export function buildTelegramUpdateExecutionPlan(
       return {
         kind: "callback",
         query: action.query,
-        shouldPair: action.authorization.kind === "pair",
         shouldDeny: action.authorization.kind === "deny",
       };
     case "message":
       return {
         kind: "message",
         message: action.message,
-        shouldPair: action.authorization.kind === "pair",
-        shouldNotifyPaired: action.authorization.kind === "pair",
         shouldDeny: action.authorization.kind === "deny",
       };
   }
@@ -280,10 +270,7 @@ export interface TelegramUpdateRuntimeDeps {
     >,
     ctx: ExtensionContext,
   ) => Promise<void>;
-  pairTelegramUserIfNeeded: (
-    userId: number,
-    ctx: ExtensionContext,
-  ) => Promise<boolean>;
+  onDeniedUserId?: (userId: number) => void;
   answerCallbackQuery: (
     callbackQueryId: string,
     text?: string,
@@ -356,10 +343,8 @@ export async function executeTelegramUpdatePlan(
     return;
   }
   if (plan.kind === "callback") {
-    if (plan.shouldPair) {
-      await deps.pairTelegramUserIfNeeded(plan.query.from.id, deps.ctx);
-    }
     if (plan.shouldDeny) {
+      deps.onDeniedUserId?.(plan.query.from.id);
       const callbackQueryId = getTelegramCallbackQueryId(plan.query);
       if (callbackQueryId) {
         await deps.answerCallbackQuery(
@@ -372,18 +357,9 @@ export async function executeTelegramUpdatePlan(
     await deps.handleAuthorizedTelegramCallbackQuery(plan.query, deps.ctx);
     return;
   }
-  const pairedNow = plan.shouldPair
-    ? await deps.pairTelegramUserIfNeeded(plan.message.from.id, deps.ctx)
-    : false;
   const replyTarget = getTelegramMessageReplyTarget(plan.message);
-  if (pairedNow && plan.shouldNotifyPaired && replyTarget) {
-    await deps.sendTextReply(
-      replyTarget.chatId,
-      replyTarget.messageId,
-      "Telegram bridge paired with this account.",
-    );
-  }
   if (plan.shouldDeny) {
+    deps.onDeniedUserId?.(plan.message.from.id);
     if (replyTarget) {
       await deps.sendTextReply(
         replyTarget.chatId,

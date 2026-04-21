@@ -100,6 +100,7 @@ import {
 import {
   getTelegramBotTokenInputDefault,
   getTelegramBotTokenPromptSpec,
+  readAllowedUserIdFromEnv,
 } from "./lib/setup.ts";
 import { buildStatusHtml, extractTurnCost, formatTurnCostLine } from "./lib/status.ts";
 import {
@@ -109,7 +110,6 @@ import {
 import {
   collectTelegramReactionEmojis,
   executeTelegramUpdate,
-  getTelegramAuthorizationState,
 } from "./lib/updates.ts";
 
 // --- Telegram API Types ---
@@ -369,6 +369,7 @@ export const __telegramTestUtils = {
   canDispatchTelegramTurnState,
   getTelegramBotTokenInputDefault,
   getTelegramBotTokenPromptSpec,
+  readAllowedUserIdFromEnv,
   canRestartTelegramTurnForModelSwitch,
   restartTelegramModelSwitchContinuation,
   shouldTriggerPendingTelegramModelSwitchAbort,
@@ -502,7 +503,7 @@ export default function (pi: ExtensionAPI) {
     if (!config.allowedUserId) {
       ctx.ui.setStatus(
         "telegram",
-        `${label} ${theme.fg("warning", "awaiting pairing")}`,
+        `${label} ${theme.fg("warning", "awaiting config")}`,
       );
       return;
     }
@@ -969,10 +970,33 @@ export default function (pi: ExtensionAPI) {
         `Telegram bot connected: @${config.botUsername ?? "unknown"}`,
         "info",
       );
-      ctx.ui.notify(
-        "Send /start to your bot in Telegram to pair this extension with your account.",
-        "info",
-      );
+
+      if (!config.allowedUserId) {
+        ctx.ui.notify(
+          "Enter your numeric Telegram user ID. To find it: DM @userinfobot on Telegram — it replies with your ID. This is NOT your @username or phone number.",
+          "info",
+        );
+        const rawUserId = await ctx.ui.input(
+          "Allowed Telegram user ID (numeric, e.g. 123456789)",
+          "",
+        );
+        if (!rawUserId) return;
+        const parsedUserId = Number(rawUserId.trim());
+        if (!Number.isInteger(parsedUserId) || parsedUserId <= 0) {
+          ctx.ui.notify(
+            `"${rawUserId}" is not a valid Telegram user ID. Must be a positive integer.`,
+            "error",
+          );
+          return;
+        }
+        config.allowedUserId = parsedUserId;
+        await writeTelegramConfig(AGENT_DIR, CONFIG_PATH, config);
+        ctx.ui.notify(
+          `Allowed user ID set to ${config.allowedUserId}. Send a message from that account to confirm.`,
+          "info",
+        );
+      }
+
       await startPolling(ctx);
       updateStatus(ctx);
     } finally {
@@ -1726,11 +1750,6 @@ export default function (pi: ExtensionAPI) {
       }
     }
     await sendTextReply(message.chat.id, message.message_id, helpText);
-    if (config.allowedUserId === undefined && message.from) {
-      config.allowedUserId = message.from.id;
-      await writeTelegramConfig(AGENT_DIR, CONFIG_PATH, config);
-      updateStatus(ctx);
-    }
   }
 
   async function handleTelegramCommand(
@@ -1818,21 +1837,6 @@ export default function (pi: ExtensionAPI) {
     await dispatchAuthorizedTelegramMessages([message], ctx);
   }
 
-  async function pairTelegramUserIfNeeded(
-    userId: number,
-    ctx: ExtensionContext,
-  ): Promise<boolean> {
-    const authorization = getTelegramAuthorizationState(
-      userId,
-      config.allowedUserId,
-    );
-    if (authorization.kind !== "pair") return false;
-    config.allowedUserId = authorization.userId;
-    await writeTelegramConfig(AGENT_DIR, CONFIG_PATH, config);
-    updateStatus(ctx);
-    return true;
-  }
-
   async function handleUpdate(
     update: TelegramUpdate,
     ctx: ExtensionContext,
@@ -1850,7 +1854,12 @@ export default function (pi: ExtensionAPI) {
           nextCtx,
         );
       },
-      pairTelegramUserIfNeeded,
+      onDeniedUserId: (userId) => {
+        ctx.ui.notify(
+          `Telegram: rejected message from user ID ${userId} (not the configured allowed user). To allow this user, set TELEGRAM_ALLOWED_USER_ID=${userId}.`,
+          "warning",
+        );
+      },
       answerCallbackQuery,
       handleAuthorizedTelegramCallbackQuery: async (query, nextCtx) => {
         await handleAuthorizedTelegramCallbackQuery(
@@ -1923,6 +1932,13 @@ export default function (pi: ExtensionAPI) {
     ) {
       return;
     }
+    if (!config.allowedUserId) {
+      ctx.ui.notify(
+        "Telegram polling blocked: allowedUserId is not set. Set TELEGRAM_ALLOWED_USER_ID or run /telegram-setup to configure it.",
+        "warning",
+      );
+      return;
+    }
     pollingController = new AbortController();
     pollingPromise = pollLoop(ctx, pollingController.signal).finally(() => {
       pollingPromise = undefined;
@@ -1945,7 +1961,7 @@ export default function (pi: ExtensionAPI) {
     getStatusLines: () => {
       return [
         `bot: ${config.botUsername ? `@${config.botUsername}` : "not configured"}`,
-        `allowed user: ${config.allowedUserId ?? "not paired"}`,
+        `allowed user: ${config.allowedUserId ?? "not configured"}`,
         `polling: ${pollingPromise ? "running" : "stopped"}`,
         `active telegram turn: ${activeTelegramTurn ? "yes" : "no"}`,
         `queued telegram turns: ${queuedTelegramItems.length}`,
@@ -1965,6 +1981,11 @@ export default function (pi: ExtensionAPI) {
   registerTelegramLifecycleHooks(pi, {
     onSessionStart: async (_event, ctx) => {
       config = await readTelegramConfig(CONFIG_PATH);
+      const envAllowedUserId = readAllowedUserIdFromEnv(process.env);
+      if (envAllowedUserId !== undefined && envAllowedUserId !== config.allowedUserId) {
+        config.allowedUserId = envAllowedUserId;
+        await writeTelegramConfig(AGENT_DIR, CONFIG_PATH, config);
+      }
       const sessionStartState = buildTelegramSessionStartState(ctx.model);
       currentTelegramModel = sessionStartState.currentTelegramModel;
       activeTelegramToolExecutions =

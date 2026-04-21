@@ -16,6 +16,22 @@ export const TELEGRAM_BOT_TOKEN_ENV_VARS = [
   "TELEGRAM_KEY",
 ] as const;
 
+export const TELEGRAM_ALLOWED_USER_ID_ENV_VAR = "TELEGRAM_ALLOWED_USER_ID";
+
+export function readAllowedUserIdFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): number | undefined {
+  const raw = env[TELEGRAM_ALLOWED_USER_ID_ENV_VAR]?.trim();
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(
+      `${TELEGRAM_ALLOWED_USER_ID_ENV_VAR}="${raw}" is not a valid Telegram user ID (must be a positive integer)`,
+    );
+  }
+  return parsed;
+}
+
 export function getTelegramBotTokenInputDefault(
   env: NodeJS.ProcessEnv = process.env,
   configToken?: string,

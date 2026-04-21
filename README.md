@@ -71,6 +71,16 @@ Start pi, then run:
 Paste the bot token when prompted.
 If a bot token is already saved in `~/.pi/agent/telegram.json`, `/telegram-setup` shows that stored value by default. Otherwise it pre-fills from the first configured environment variable in `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_KEY`, `TELEGRAM_TOKEN`, or `TELEGRAM_KEY`.
 
+After the bot token, `/telegram-setup` asks for your numeric Telegram user ID if one is not already configured. To find your ID: DM [@userinfobot](https://t.me/userinfobot) on Telegram — it replies with your numeric ID. This is your permanent account ID, not your `@username` (mutable) or phone number (never visible to bots).
+
+You can also pre-configure the allowed user ID via the environment variable `TELEGRAM_ALLOWED_USER_ID`:
+
+```bash
+export TELEGRAM_ALLOWED_USER_ID=123456789
+```
+
+The env var takes precedence over the saved config file on every session start. Only one user ID is supported.
+
 The extension stores config in:
 
 ```text
@@ -97,14 +107,11 @@ Check status:
 /telegram-status
 ```
 
-## Pair your Telegram account
+## Allowed Telegram user
 
-After token setup and `/telegram-connect`:
+The bot only accepts messages from the pre-configured allowed user. Polling will not start until an allowed user ID is configured.
 
-1. Open the DM with your bot in Telegram
-2. Send `/start`
-
-The first DM user becomes the allowed Telegram user for the bridge. The extension only accepts messages from that user.
+If any other Telegram account messages the bot, the bot replies with an authorization error and logs the sender's numeric user ID to the pi TUI (as a warning) so you can identify it if needed.
 
 ## Usage
 
