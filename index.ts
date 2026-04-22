@@ -403,7 +403,7 @@ export default function (pi: ExtensionAPI) {
   let setupInProgress = false;
   let previewState: TelegramPreviewState | undefined;
   let displayMode: DisplayMode = "compact";
-  let emittedNonTextBlockCount = 0;
+  let pendingNonTextBlocks: TelegramAssistantDisplayBlock[] = [];
   let draftSupport: "unknown" | "supported" | "unsupported" = "unknown";
   let nextDraftId = 0;
   let currentTelegramModel: Model<any> | undefined;
@@ -2042,7 +2042,7 @@ export default function (pi: ExtensionAPI) {
       }
       if (startPlan.activeTurn) {
         activeTelegramTurn = { ...startPlan.activeTurn };
-        emittedNonTextBlockCount = 0;
+        pendingNonTextBlocks = [];
         previewState = createPreviewState();
         startTypingLoop(ctx);
       }
@@ -2074,7 +2074,12 @@ export default function (pi: ExtensionAPI) {
           await finalizePreview(activeTelegramTurn.chatId);
         }
       }
-      emittedNonTextBlockCount = 0;
+      // Flush non-text blocks from the completed previous message now that args are fully populated
+      for (const block of pendingNonTextBlocks) {
+        const msg = renderBlockMessage(block, displayMode);
+        if (msg) void sendMarkdownReply(activeTelegramTurn.chatId, activeTelegramTurn.replyToMessageId, msg);
+      }
+      pendingNonTextBlocks = [];
       previewState = createPreviewState();
     },
     onMessageUpdate: async (event, _ctx) => {
@@ -2083,17 +2088,10 @@ export default function (pi: ExtensionAPI) {
       if (!previewState) previewState = createPreviewState();
 
       const allBlocks = getMessageBlocks(nextEvent.message);
-      const nonTextBlocks = allBlocks.filter((b) => b.type !== "text");
 
-      // Emit each new non-text block as its own Telegram message
-      for (let i = emittedNonTextBlockCount; i < nonTextBlocks.length; i++) {
-        const block = nonTextBlocks[i]!;
-        const msg = renderBlockMessage(block, displayMode);
-        if (msg) {
-          void sendMarkdownReply(activeTelegramTurn.chatId, activeTelegramTurn.replyToMessageId, msg);
-        }
-        emittedNonTextBlockCount++;
-      }
+      // Buffer non-text blocks; emit after the message completes (in onMessageStart / onAgentEnd)
+      // so tool_call blocks have their args fully populated before being sent
+      pendingNonTextBlocks = allBlocks.filter((b) => b.type !== "text");
 
       // Stream text content in the preview message
       const textContent = allBlocks
@@ -2111,7 +2109,6 @@ export default function (pi: ExtensionAPI) {
       currentAbort = undefined;
       stopTypingLoop();
       activeTelegramTurn = undefined;
-      emittedNonTextBlockCount = 0;
       activeTelegramToolExecutions = 0;
       pendingTelegramModelSwitch = undefined;
       telegramTurnDispatchPending = false;
@@ -2144,6 +2141,13 @@ export default function (pi: ExtensionAPI) {
         if (endPlan.shouldDispatchNext) dispatchNextQueuedTelegramTurn(ctx);
         return;
       }
+
+      // Flush any non-text blocks from the final message (single-message turns never trigger onMessageStart)
+      for (const block of pendingNonTextBlocks) {
+        const msg = renderBlockMessage(block, displayMode);
+        if (msg) void sendMarkdownReply(turn.chatId, turn.replyToMessageId, msg);
+      }
+      pendingNonTextBlocks = [];
 
       // Finalize the streaming text preview (only for normal completions, not abort/empty)
       if (endPlan.kind === "text") {
