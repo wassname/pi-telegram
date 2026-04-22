@@ -81,10 +81,10 @@ import {
 } from "./lib/registration.ts";
 import {
   MAX_MESSAGE_LENGTH,
-  buildTelegramAssistantPreviewText,
-  buildTelegramAssistantTranscriptMarkdown,
+  renderBlockMessage,
   renderMarkdownPreviewText,
   renderTelegramMessage,
+  type DisplayMode,
   type TelegramAssistantDisplayBlock,
   type TelegramRenderMode,
 } from "./lib/rendering.ts";
@@ -402,9 +402,8 @@ export default function (pi: ExtensionAPI) {
   let compactionInProgress = false;
   let setupInProgress = false;
   let previewState: TelegramPreviewState | undefined;
-  let traceVisible = true;
-  let activeTelegramTraceBlocks: TelegramAssistantDisplayBlock[] = [];
-  let activeTelegramMessageBlocks: TelegramAssistantDisplayBlock[] = [];
+  let displayMode: DisplayMode = "compact";
+  let emittedNonTextBlockCount = 0;
   let draftSupport: "unknown" | "supported" | "unsupported" = "unknown";
   let nextDraftId = 0;
   let currentTelegramModel: Model<any> | undefined;
@@ -701,10 +700,6 @@ export default function (pi: ExtensionAPI) {
     );
   }
 
-  function getActiveTracePreviewBlocks(): TelegramAssistantDisplayBlock[] {
-    return [...activeTelegramTraceBlocks, ...activeTelegramMessageBlocks];
-  }
-
   function extractAssistantTurn(messages: AgentMessage[]): {
     blocks: TelegramAssistantDisplayBlock[];
     text?: string;
@@ -741,19 +736,8 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  function setTraceVisible(nextTraceVisible: boolean, ctx: ExtensionContext): void {
-    traceVisible = nextTraceVisible;
-    if (activeTelegramTurn && previewState) {
-      previewState.pendingText = buildTelegramAssistantPreviewText(
-        getActiveTracePreviewBlocks(),
-        nextTraceVisible,
-      );
-      if (previewState.pendingText.trim().length > 0) {
-        schedulePreviewFlush(activeTelegramTurn.chatId);
-      } else {
-        void clearPreview(activeTelegramTurn.chatId);
-      }
-    }
+  function setDisplayMode(mode: DisplayMode, ctx: ExtensionContext): void {
+    displayMode = mode;
     updateStatus(ctx);
     void refreshOpenStatusMenus(ctx);
   }
@@ -1005,23 +989,27 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function registerTelegramBotCommands(): Promise<void> {
-    const commands: TelegramBotCommand[] = [
-      {
-        command: "start",
-        description: "Show help and pair the Telegram bridge",
-      },
-      {
-        command: "status",
-        description: "Show model, usage, cost, and context status",
-      },
-      {
-        command: "trace",
-        description: "Toggle thinking and tool-call visibility",
-      },
+    const localCommands: TelegramBotCommand[] = [
+      { command: "start", description: "Show help" },
+      { command: "status", description: "Show model, usage, cost, and context status" },
+      { command: "trace", description: "Cycle display mode: text / compact / full" },
       { command: "model", description: "Open the interactive model selector" },
       { command: "compact", description: "Compact the current pi session" },
       { command: "stop", description: "Abort the current pi task" },
     ];
+    const localNames = new Set(localCommands.map((c) => c.command));
+    const telegramCommandNamePattern = /^[a-z0-9_]{1,32}$/;
+    const extensionCommands: TelegramBotCommand[] = pi.getCommands()
+      .filter((c: { name: string; description?: string; source?: string }) =>
+        c.source === "extension" &&
+        !localNames.has(c.name) &&
+        telegramCommandNamePattern.test(c.name),
+      )
+      .map((c: { name: string; description?: string }) => ({
+        command: c.name,
+        description: c.description ?? c.name,
+      }));
+    const commands = [...localCommands, ...extensionCommands];
     await callTelegramApi<boolean>("setMyCommands", { commands });
   }
 
@@ -1124,10 +1112,10 @@ export default function (pi: ExtensionAPI) {
   ): Promise<void> {
     await updateTelegramStatusMessage(
       state,
-      buildStatusHtml(ctx, getCurrentTelegramModel(ctx), traceVisible),
+      buildStatusHtml(ctx, getCurrentTelegramModel(ctx), displayMode !== "text"),
       getCurrentTelegramModel(ctx),
       pi.getThinkingLevel(),
-      traceVisible,
+      displayMode !== "text",
       { editInteractiveMessage, sendInteractiveMessage },
     );
   }
@@ -1147,10 +1135,10 @@ export default function (pi: ExtensionAPI) {
     const state = await getModelMenuState(chatId, ctx);
     const messageId = await sendTelegramStatusMessage(
       state,
-      buildStatusHtml(ctx, getCurrentTelegramModel(ctx), traceVisible),
+      buildStatusHtml(ctx, getCurrentTelegramModel(ctx), displayMode !== "text"),
       getCurrentTelegramModel(ctx),
       pi.getThinkingLevel(),
-      traceVisible,
+      displayMode !== "text",
       { editInteractiveMessage, sendInteractiveMessage },
     );
     if (messageId === undefined) return;
@@ -1311,10 +1299,8 @@ export default function (pi: ExtensionAPI) {
         updateThinkingMenuMessage: async () =>
           updateThinkingMenuMessage(state, ctx),
         updateStatusMessage: async () => showStatusMessage(state, ctx),
-        setTraceVisible: (nextTraceVisible) => {
-          setTraceVisible(nextTraceVisible, ctx);
-        },
-        getTraceVisible: () => traceVisible,
+        setTraceVisible: (v) => setDisplayMode(v ? "compact" : "text", ctx),
+        getTraceVisible: () => displayMode !== "text",
         answerCallbackQuery,
       },
     );
@@ -1723,13 +1709,10 @@ export default function (pi: ExtensionAPI) {
     message: TelegramMessage,
     ctx: ExtensionContext,
   ): Promise<void> {
-    const nextTraceVisible = !traceVisible;
-    setTraceVisible(nextTraceVisible, ctx);
-    await sendTextReply(
-      message.chat.id,
-      message.message_id,
-      `Trace visibility: ${nextTraceVisible ? "on" : "off"}.`,
-    );
+    const modes: DisplayMode[] = ["text", "compact", "full"];
+    const nextMode = modes[(modes.indexOf(displayMode) + 1) % modes.length]!;
+    setDisplayMode(nextMode, ctx);
+    await sendTextReply(message.chat.id, message.message_id, `Display mode: ${nextMode}.`);
   }
 
   async function handleHelpCommand(
@@ -2059,8 +2042,7 @@ export default function (pi: ExtensionAPI) {
       }
       if (startPlan.activeTurn) {
         activeTelegramTurn = { ...startPlan.activeTurn };
-        activeTelegramTraceBlocks = [];
-        activeTelegramMessageBlocks = [];
+        emittedNonTextBlockCount = 0;
         previewState = createPreviewState();
         startTypingLoop(ctx);
       }
@@ -2082,175 +2064,112 @@ export default function (pi: ExtensionAPI) {
       if (!activeTelegramTurn) return;
       triggerPendingTelegramModelSwitchAbort(ctx);
     },
-    onMessageStart: async (event, _ctx) => {
-      const nextEvent = event as { message: AgentMessage };
-      if (!activeTelegramTurn || !isAssistantMessage(nextEvent.message)) return;
-      {
-        const rawContent = (nextEvent.message as unknown as Record<string, unknown>).content;
-        const rawBlocks = Array.isArray(rawContent) ? rawContent : [];
-        const blockTypes = rawBlocks.map((b: Record<string, unknown>) => b?.type ?? "unknown");
-        console.log(`${TELEGRAM_PREFIX} [trace-debug] messageStart role=${(nextEvent.message as unknown as Record<string, unknown>).role} blockTypes=${JSON.stringify(blockTypes)}`);
-      }
-      if (traceVisible) {
-        if (activeTelegramMessageBlocks.length > 0) {
-          activeTelegramTraceBlocks.push(...activeTelegramMessageBlocks);
-          activeTelegramMessageBlocks = [];
-        }
-        if (!previewState) {
-          previewState = createPreviewState();
-        }
-        return;
-      }
-      if (
-        previewState &&
-        (previewState.pendingText.trim().length > 0 ||
-          previewState.lastSentText.trim().length > 0)
-      ) {
+    onMessageStart: async (_event, _ctx) => {
+      if (!activeTelegramTurn) return;
+      if (previewState && (previewState.pendingText.trim().length > 0 || previewState.lastSentText.trim().length > 0)) {
         const previousText = previewState.pendingText.trim();
         if (previousText.length > 0) {
-          await finalizeMarkdownPreview(
-            activeTelegramTurn.chatId,
-            previousText,
-          );
+          await finalizeMarkdownPreview(activeTelegramTurn.chatId, previousText);
         } else {
           await finalizePreview(activeTelegramTurn.chatId);
         }
       }
+      emittedNonTextBlockCount = 0;
       previewState = createPreviewState();
     },
     onMessageUpdate: async (event, _ctx) => {
       const nextEvent = event as { message: AgentMessage };
       if (!activeTelegramTurn || !isAssistantMessage(nextEvent.message)) return;
-      if (!previewState) {
-        previewState = createPreviewState();
-      }
-      if (traceVisible) {
-        const rawContent = (nextEvent.message as unknown as Record<string, unknown>).content;
-        const rawBlocks = Array.isArray(rawContent) ? rawContent : [];
-        const blockTypes = rawBlocks.map((b: Record<string, unknown>) => b?.type ?? "unknown");
-        if (blockTypes.some((t: string) => t !== "text")) {
-          console.log(`${TELEGRAM_PREFIX} [trace-debug] message block types: ${JSON.stringify(blockTypes)}`);
-          console.log(`${TELEGRAM_PREFIX} [trace-debug] non-text blocks: ${JSON.stringify(rawBlocks.filter((b: Record<string, unknown>) => b?.type !== "text").map((b: Record<string, unknown>) => ({ type: b?.type, keys: Object.keys(b ?? {}) })))}`);
+      if (!previewState) previewState = createPreviewState();
+
+      const allBlocks = getMessageBlocks(nextEvent.message);
+      const nonTextBlocks = allBlocks.filter((b) => b.type !== "text");
+
+      // Emit each new non-text block as its own Telegram message
+      for (let i = emittedNonTextBlockCount; i < nonTextBlocks.length; i++) {
+        const block = nonTextBlocks[i]!;
+        const msg = renderBlockMessage(block, displayMode);
+        if (msg) {
+          void sendMarkdownReply(activeTelegramTurn.chatId, activeTelegramTurn.replyToMessageId, msg);
         }
-        activeTelegramMessageBlocks = getMessageBlocks(nextEvent.message);
-        previewState.pendingText = buildTelegramAssistantPreviewText(
-          getActiveTracePreviewBlocks(),
-          true,
-        );
-      } else {
-        previewState.pendingText = getMessageText(nextEvent.message);
+        emittedNonTextBlockCount++;
       }
-      schedulePreviewFlush(activeTelegramTurn.chatId);
+
+      // Stream text content in the preview message
+      const textContent = allBlocks
+        .filter((b) => b.type === "text")
+        .map((b) => (b as { type: "text"; text: string }).text)
+        .join("")
+        .trim();
+      if (textContent) {
+        previewState.pendingText = textContent;
+        schedulePreviewFlush(activeTelegramTurn.chatId);
+      }
     },
     onAgentEnd: async (event, ctx) => {
       const turn = activeTelegramTurn;
       currentAbort = undefined;
       stopTypingLoop();
       activeTelegramTurn = undefined;
-      activeTelegramTraceBlocks = [];
-      activeTelegramMessageBlocks = [];
+      emittedNonTextBlockCount = 0;
       activeTelegramToolExecutions = 0;
       pendingTelegramModelSwitch = undefined;
       telegramTurnDispatchPending = false;
       updateStatus(ctx);
       const assistant = turn
         ? extractAssistantSummary((event as { messages: AgentMessage[] }).messages)
-        : { blocks: [] };
-      let finalText = traceVisible
-        ? buildTelegramAssistantTranscriptMarkdown(assistant.blocks, true)
-        : assistant.text;
-      // Append per-turn cost/context footer when trace is on
-      if (traceVisible && turn && finalText) {
-        const turnCost = extractTurnCost((event as { messages: AgentMessage[] }).messages as any);
-        const usage = ctx.getContextUsage();
-        if (turnCost) {
-          finalText += `\n\n---\n${formatTurnCostLine(turnCost, usage?.percent ?? null)}`;
-        }
-      }
+        : { blocks: [], text: undefined, stopReason: undefined, errorMessage: undefined };
+
       const endPlan = buildTelegramAgentEndPlan({
         hasTurn: !!turn,
         stopReason: assistant.stopReason,
-        hasFinalText: !!finalText,
+        hasFinalText: !!(assistant.text?.trim()),
         hasQueuedAttachments: (turn?.queuedAttachments.length ?? 0) > 0,
         preserveQueuedTurnsAsHistory,
       });
+
       if (!turn) {
-        // Notify about non-telegram turns when trace is on (scheduled prompts, system events, etc.)
-        if (traceVisible && config.allowedUserId) {
-          const nonTelegramAssistant = extractAssistantSummary((event as { messages: AgentMessage[] }).messages);
-          const summary = nonTelegramAssistant.text?.slice(0, 500);
-          const turnCost = extractTurnCost((event as { messages: AgentMessage[] }).messages as any);
-          const usage = ctx.getContextUsage();
-          const costLine = turnCost ? formatTurnCostLine(turnCost, usage?.percent ?? null) : undefined;
-          const parts = ["[non-telegram turn]"];
-          if (summary) parts.push(summary);
-          if (costLine) parts.push(`---\n${costLine}`);
-          void sendTextReply(config.allowedUserId, 0, parts.join("\n"));
-        }
-        if (endPlan.shouldDispatchNext) {
-          dispatchNextQueuedTelegramTurn(ctx);
-        }
+        if (endPlan.shouldDispatchNext) dispatchNextQueuedTelegramTurn(ctx);
         return;
       }
+
       if (endPlan.shouldClearPreview) {
         await clearPreview(turn.chatId);
       }
+
       if (endPlan.shouldSendErrorMessage) {
-        const errorText =
-          assistant.errorMessage ||
-          "Telegram bridge: pi failed while processing the request.";
-        const errorTranscript = traceVisible && assistant.blocks.length > 0
-          ? `${buildTelegramAssistantTranscriptMarkdown(assistant.blocks, true)}\n\n**Error**\n> ${errorText}`
-          : undefined;
-        if (errorTranscript) {
-          if (previewState) {
-            previewState.pendingText = errorTranscript;
-          }
-          const finalized = await finalizeMarkdownPreview(
-            turn.chatId,
-            errorTranscript,
-          );
-          if (!finalized) {
-            await clearPreview(turn.chatId);
-            await sendMarkdownReply(
-              turn.chatId,
-              turn.replyToMessageId,
-              errorTranscript,
-            );
-          }
-        } else {
-          await sendTextReply(turn.chatId, turn.replyToMessageId, errorText);
-        }
-        if (endPlan.shouldDispatchNext) {
-          dispatchNextQueuedTelegramTurn(ctx);
-        }
+        const errorText = assistant.errorMessage || "Telegram bridge: pi failed while processing the request.";
+        await finalizePreview(turn.chatId);
+        await sendTextReply(turn.chatId, turn.replyToMessageId, `**Error**: ${errorText}`);
+        if (endPlan.shouldDispatchNext) dispatchNextQueuedTelegramTurn(ctx);
         return;
       }
-      if (previewState) {
-        previewState.pendingText = finalText ?? previewState.pendingText;
-      }
-      if (endPlan.kind === "text" && finalText) {
-        const finalized = await finalizeMarkdownPreview(turn.chatId, finalText);
-        if (!finalized) {
-          await clearPreview(turn.chatId);
-          await sendMarkdownReply(
-            turn.chatId,
-            turn.replyToMessageId,
-            finalText,
-          );
+
+      // Finalize the streaming text preview (only for normal completions, not abort/empty)
+      if (endPlan.kind === "text") {
+        const finalText = previewState?.pendingText.trim() || assistant.text?.trim();
+        if (finalText) {
+          const finalized = await finalizeMarkdownPreview(turn.chatId, finalText);
+          if (!finalized) {
+            await clearPreview(turn.chatId);
+            await sendMarkdownReply(turn.chatId, turn.replyToMessageId, finalText);
+          }
+        } else {
+          await finalizePreview(turn.chatId);
+        }
+        // Cost footer
+        const turnCost = extractTurnCost((event as { messages: AgentMessage[] }).messages as any);
+        const usage = ctx.getContextUsage();
+        if (turnCost) {
+          void sendTextReply(turn.chatId, turn.replyToMessageId, `---\n${formatTurnCostLine(turnCost, usage?.percent ?? null)}`);
         }
       }
+
       if (endPlan.shouldSendAttachmentNotice) {
-        await sendTextReply(
-          turn.chatId,
-          turn.replyToMessageId,
-          "Attached requested file(s).",
-        );
+        await sendTextReply(turn.chatId, turn.replyToMessageId, "Attached requested file(s).");
       }
       await sendQueuedAttachments(turn);
-      if (endPlan.shouldDispatchNext) {
-        dispatchNextQueuedTelegramTurn(ctx);
-      }
+      if (endPlan.shouldDispatchNext) dispatchNextQueuedTelegramTurn(ctx);
     },
   });
 }

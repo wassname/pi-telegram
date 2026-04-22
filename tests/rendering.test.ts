@@ -8,64 +8,69 @@ import test from "node:test";
 
 import {
   MAX_MESSAGE_LENGTH,
-  buildTelegramAssistantPreviewText,
-  buildTelegramAssistantTranscriptMarkdown,
+  renderBlockMessage,
   renderTelegramMessage,
+  type DisplayMode,
 } from "../lib/rendering.ts";
 
-test("Assistant trace helpers build compact previews and fuller transcripts", () => {
-  const blocks = [
-    { type: "text", text: "Answer intro" },
-    { type: "thinking", text: "Need to inspect the config first." },
-    {
-      type: "tool_call",
-      name: "read_config",
-      argsText: '{"path":"config.json"}',
-    },
-    { type: "text", text: "\n\nFinal answer." },
-  ] as const;
-  assert.equal(
-    buildTelegramAssistantPreviewText(blocks as never, true),
-    [
-      "Answer intro",
-      "[thinking] Need to inspect the config first.",
-      '[tool] read_config {"path":"config.json"}',
-      "Final answer.",
-    ].join("\n\n"),
-  );
-  assert.equal(
-    buildTelegramAssistantPreviewText(blocks as never, false),
-    "Answer intro\n\nFinal answer.",
-  );
-  assert.equal(
-    buildTelegramAssistantTranscriptMarkdown(blocks as never, true),
-    [
-      "Answer intro",
-      "**Thinking**\n> Need to inspect the config first.",
-      '**Tool call** `read_config` `{"path":"config.json"}`',
-      "Final answer.",
-    ].join("\n\n"),
-  );
-  assert.equal(
-    buildTelegramAssistantTranscriptMarkdown(blocks as never, false),
-    "Answer intro\n\nFinal answer.",
-  );
+test("renderBlockMessage returns undefined for text blocks in all modes", () => {
+  const block = { type: "text" as const, text: "hello" };
+  for (const mode of ["full", "compact", "text"] as DisplayMode[]) {
+    assert.equal(renderBlockMessage(block, mode), undefined);
+  }
 });
 
-test("Assistant trace transcript uses code fences for long tool arguments", () => {
-  const markdown = buildTelegramAssistantTranscriptMarkdown(
-    [
-      { type: "text", text: "Answer" },
-      {
-        type: "tool_call",
-        name: "write_file",
-        argsText: '{\n  "path": "out/report.md",\n  "content": "long body"\n}',
-      },
-    ],
-    true,
-  );
-  assert.match(markdown, /\*\*Tool call\*\* `write_file`/);
-  assert.match(markdown, /```json/);
+test("renderBlockMessage renders thinking block with blockquote", () => {
+  const block = { type: "thinking" as const, text: "Need to inspect the config first." };
+  const result = renderBlockMessage(block, "full");
+  assert.ok(result?.startsWith("**Thinking**\n>"));
+  assert.ok(result?.includes("Need to inspect the config first."));
+});
+
+test("renderBlockMessage truncates thinking in compact mode", () => {
+  const longText = "x".repeat(600);
+  const block = { type: "thinking" as const, text: longText };
+  const compact = renderBlockMessage(block, "compact")!;
+  const full = renderBlockMessage(block, "full")!;
+  assert.ok(compact.length < full.length);
+  assert.ok(compact.includes("…"));
+});
+
+test("renderBlockMessage renders tool_call block", () => {
+  const block = { type: "tool_call" as const, name: "read_config", argsText: '{"path":"config.json"}' };
+  const result = renderBlockMessage(block, "full")!;
+  assert.ok(result.includes("**Tool call**"));
+  assert.ok(result.includes("`read_config`"));
+});
+
+test("renderBlockMessage uses code fence for long tool_call args", () => {
+  const block = {
+    type: "tool_call" as const,
+    name: "write_file",
+    argsText: '{\n  "path": "out/report.md",\n  "content": "long body"\n}',
+  };
+  const result = renderBlockMessage(block, "full")!;
+  assert.match(result, /\*\*Tool call\*\* `write_file`/);
+  assert.match(result, /```json/);
+});
+
+test("renderBlockMessage renders tool_result and hides it in text mode", () => {
+  const block = { type: "tool_result" as const, text: "file contents here", toolName: "read_file" };
+  assert.equal(renderBlockMessage(block, "text"), undefined);
+  const compact = renderBlockMessage(block, "compact")!;
+  assert.ok(compact.includes("**Tool result**"));
+  assert.ok(compact.includes("`read_file`"));
+  assert.ok(compact.includes("file contents here"));
+  const full = renderBlockMessage(block, "full")!;
+  assert.ok(full.includes("file contents here"));
+});
+
+test("renderBlockMessage truncates tool_result in compact mode", () => {
+  const block = { type: "tool_result" as const, text: "x".repeat(600) };
+  const compact = renderBlockMessage(block, "compact")!;
+  const full = renderBlockMessage(block, "full")!;
+  assert.ok(compact.length < full.length);
+  assert.ok(compact.includes("…"));
 });
 
 test("Nested lists stay out of code blocks", () => {

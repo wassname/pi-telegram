@@ -5,33 +5,17 @@
 
 export const MAX_MESSAGE_LENGTH = 4096;
 
+export type DisplayMode = "full" | "compact" | "text";
+
 export type TelegramAssistantDisplayBlock =
   | { type: "text"; text: string }
   | { type: "thinking"; text: string }
-  | { type: "tool_call"; name: string; argsText?: string };
+  | { type: "tool_call"; name: string; argsText?: string }
+  | { type: "tool_result"; text: string; toolName?: string };
 
 function truncateDisplayText(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   return `${text.slice(0, Math.max(0, maxLength - 1))}…`;
-}
-
-function normalizePreviewInlineText(text: string): string {
-  return renderMarkdownPreviewText(text).replace(/\s+/g, " ").trim();
-}
-
-function renderTracePreviewLine(block: TelegramAssistantDisplayBlock): string | undefined {
-  if (block.type === "text") return undefined;
-  if (block.type === "thinking") {
-    const summary = normalizePreviewInlineText(block.text);
-    if (!summary) return undefined;
-    return `[thinking] ${truncateDisplayText(summary, 120)}`;
-  }
-  const parts = [`[tool] ${block.name}`];
-  if (block.argsText?.trim()) {
-    const summary = normalizePreviewInlineText(block.argsText);
-    if (summary) parts.push(summary);
-  }
-  return truncateDisplayText(parts.join(" "), 160);
 }
 
 function renderMarkdownQuote(text: string): string {
@@ -50,47 +34,35 @@ function renderToolArgsMarkdown(argsText: string): string {
   return ` ${"`"}${trimmed}${"`"}`;
 }
 
-export function buildTelegramAssistantPreviewText(
-  blocks: TelegramAssistantDisplayBlock[],
-  traceVisible: boolean,
-): string {
-  const sections: string[] = [];
-  for (const block of blocks) {
-    if (block.type === "text") {
-      const trimmed = block.text.trim();
-      if (trimmed) sections.push(trimmed);
-      continue;
-    }
-    if (!traceVisible) continue;
-    const line = renderTracePreviewLine(block);
-    if (line) sections.push(line);
-  }
-  return sections.join("\n\n").trim();
-}
+const COMPACT_TRUNCATE = 500;
 
-export function buildTelegramAssistantTranscriptMarkdown(
-  blocks: TelegramAssistantDisplayBlock[],
-  traceVisible: boolean,
-): string {
-  const sections: string[] = [];
-  for (const block of blocks) {
-    if (block.type === "text") {
-      const trimmed = block.text.trim();
-      if (trimmed) sections.push(trimmed);
-      continue;
-    }
-    if (!traceVisible) continue;
-    if (block.type === "thinking") {
-      const trimmed = block.text.trim();
-      if (!trimmed) continue;
-      sections.push(`**Thinking**\n${renderMarkdownQuote(trimmed)}`);
-      continue;
-    }
-    sections.push(
-      `**Tool call** ${"`"}${block.name}${"`"}${block.argsText ? renderToolArgsMarkdown(block.argsText) : ""}`,
-    );
+export function renderBlockMessage(
+  block: TelegramAssistantDisplayBlock,
+  mode: DisplayMode,
+): string | undefined {
+  if (block.type === "text") return undefined;
+
+  if (block.type === "thinking") {
+    const trimmed = block.text.trim();
+    if (!trimmed) return undefined;
+    const content = mode === "compact" ? truncateDisplayText(trimmed, COMPACT_TRUNCATE) : trimmed;
+    return `**Thinking**\n${renderMarkdownQuote(content)}`;
   }
-  return sections.join("\n\n").trim();
+
+  if (block.type === "tool_call") {
+    const argsText = block.argsText ?? "";
+    const displayArgs = mode === "compact" ? truncateDisplayText(argsText, COMPACT_TRUNCATE) : argsText;
+    return `**Tool call** \`${block.name}\`${displayArgs ? renderToolArgsMarkdown(displayArgs) : ""}`;
+  }
+
+  if (block.type === "tool_result") {
+    if (mode === "text") return undefined;
+    const trimmed = block.text.trim();
+    if (!trimmed) return undefined;
+    const content = mode === "compact" ? truncateDisplayText(trimmed, COMPACT_TRUNCATE) : trimmed;
+    const header = block.toolName ? `**Tool result** \`${block.toolName}\`` : "**Tool result**";
+    return `${header}\n${renderMarkdownQuote(content)}`;
+  }
 }
 
 // --- Escaping ---
