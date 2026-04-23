@@ -367,6 +367,15 @@ export function buildTelegramAgentEndPlan(options: {
     };
   }
   if (options.stopReason === "aborted") {
+    if (options.hasFinalText) {
+      return {
+        kind: "text",
+        shouldClearPreview: false,
+        shouldDispatchNext,
+        shouldSendErrorMessage: false,
+        shouldSendAttachmentNotice: false,
+      };
+    }
     return {
       kind: "aborted",
       shouldClearPreview: true,

@@ -1023,6 +1023,7 @@ export default function (pi: ExtensionAPI) {
 
   async function getModelMenuState(
     chatId: number,
+    args: string | undefined,
     ctx: ExtensionContext,
   ): Promise<TelegramModelMenuState> {
     const { SettingsManager } = await import("@mariozechner/pi-coding-agent");
@@ -1040,6 +1041,7 @@ export default function (pi: ExtensionAPI) {
       availableModels,
       configuredScopedModelPatterns: configuredScopedModels,
       cliScopedModelPatterns: cliScopedModels ?? undefined,
+      filterQuery: args,
     });
   }
 
@@ -1255,6 +1257,7 @@ export default function (pi: ExtensionAPI) {
   async function openModelMenu(
     chatId: number,
     replyToMessageId: number,
+    args: string | undefined,
     ctx: ExtensionContext,
   ): Promise<void> {
     if (!ctx.isIdle() && !canOfferInFlightTelegramModelSwitch(ctx)) {
@@ -1265,7 +1268,7 @@ export default function (pi: ExtensionAPI) {
       );
       return;
     }
-    const state = await getModelMenuState(chatId, ctx);
+    const state = await getModelMenuState(chatId, args, ctx);
     if (state.allModels.length === 0) {
       await sendTextReply(
         chatId,
@@ -1791,8 +1794,8 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    const commandName = parseTelegramCommand(rawText)?.name;
-    const handled = await handleTelegramCommand(commandName, firstMessage, ctx);
+    const command = parseTelegramCommand(rawText);
+    const handled = await handleTelegramCommand(command?.name, command?.args, firstMessage, ctx);
     if (handled) return;
 
     await enqueueTelegramTurn(messages, ctx);

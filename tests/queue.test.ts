@@ -526,6 +526,16 @@ test("Agent end plan classifies turn outcomes correctly", () => {
   assert.equal(abortedPlan.kind, "aborted");
   assert.equal(abortedPlan.shouldClearPreview, true);
   assert.equal(abortedPlan.shouldDispatchNext, false);
+  const abortedTextPlan = __telegramTestUtils.buildTelegramAgentEndPlan({
+    hasTurn: true,
+    stopReason: "aborted",
+    preserveQueuedTurnsAsHistory: true,
+    hasFinalText: true,
+    hasQueuedAttachments: false,
+  });
+  assert.equal(abortedTextPlan.kind, "text");
+  assert.equal(abortedTextPlan.shouldClearPreview, false);
+  assert.equal(abortedTextPlan.shouldDispatchNext, false);
   const errorPlan = __telegramTestUtils.buildTelegramAgentEndPlan({
     hasTurn: true,
     stopReason: "error",

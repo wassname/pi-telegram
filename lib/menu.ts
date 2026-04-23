@@ -124,6 +124,7 @@ export interface BuildTelegramModelMenuStateParams {
   availableModels: Model<any>[];
   configuredScopedModelPatterns: string[];
   cliScopedModelPatterns?: string[];
+  filterQuery?: string;
 }
 
 export type TelegramMenuCallbackAction =
@@ -416,8 +417,17 @@ export function getModelMenuItems(
 export function buildTelegramModelMenuState(
   params: BuildTelegramModelMenuStateParams,
 ): TelegramModelMenuState {
+  let filteredAvailableModels = params.availableModels;
+  if (params.filterQuery) {
+    const terms = params.filterQuery.toLowerCase().split(/\s+/).filter(Boolean);
+    filteredAvailableModels = filteredAvailableModels.filter((m) => {
+      const target = `${m.provider}/${m.id}`.toLowerCase();
+      return terms.every((t) => target.includes(t));
+    });
+  }
+
   const allModels = sortScopedModels(
-    params.availableModels.map((model) => ({ model })),
+    filteredAvailableModels.map((model) => ({ model })),
     params.activeModel,
   );
   const scopedModels =
@@ -425,7 +435,7 @@ export function buildTelegramModelMenuState(
       ? sortScopedModels(
           resolveScopedModelPatterns(
             params.configuredScopedModelPatterns,
-            params.availableModels,
+            filteredAvailableModels,
           ),
           params.activeModel,
         )
@@ -433,17 +443,20 @@ export function buildTelegramModelMenuState(
   let note: string | undefined;
   if (
     params.configuredScopedModelPatterns.length > 0 &&
-    scopedModels.length === 0
+    scopedModels.length === 0 &&
+    !params.filterQuery
   ) {
     note = params.cliScopedModelPatterns
       ? "No CLI scoped models matched the current auth configuration. Showing all available models."
       : "No scoped models matched the current auth configuration. Showing all available models.";
+  } else if (params.filterQuery && filteredAvailableModels.length === 0) {
+    note = "No models matched your search query.";
   }
   return {
     chatId: params.chatId,
     messageId: 0,
     page: 0,
-    scope: scopedModels.length > 0 ? "scoped" : "all",
+    scope: (scopedModels.length > 0 && !params.filterQuery) ? "scoped" : "all",
     scopedModels,
     allModels,
     note,
