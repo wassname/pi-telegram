@@ -119,6 +119,7 @@ Chat with your bot in Telegram DMs.
 
 Additional fork-specific controls:
 
+- `/start` shows help and refreshes Telegram's bot command menu with local bridge controls plus Telegram-valid pi prompt, skill, and extension commands such as `/p`
 - `/status` now has a richer view with inline buttons for model and thinking controls, and joins the high-priority control queue when pi is busy
 - `/model` opens the interactive model selector, applies idle selections immediately, joins the high-priority control queue when pi is busy, and can restart the active Telegram-owned run on the newly selected model, waiting for the current tool call to finish when needed
 - `/compact` starts session compaction when pi and the Telegram queue are idle
@@ -208,6 +209,8 @@ It tries Telegram draft streaming first with `sendMessageDraft`. If that is not 
 Compact trace mode marks shortened thinking/tool blocks explicitly instead of silently cropping them. Full trace mode keeps the complete final trace content.
 
 Direct `!` shell command replies are delivered in full across Telegram-safe chunks instead of being cut to the first screenful.
+
+Telegram's bot command menu is refreshed by `/start`. The bridge publishes its local controls first, then any pi prompt, skill, or extension commands whose names are accepted by Telegram's Bot API.
 
 ## Notes
 

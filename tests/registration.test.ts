@@ -8,9 +8,11 @@ import test from "node:test";
 
 import telegramExtension from "../index.ts";
 import {
+  buildTelegramBotCommands,
   registerTelegramAttachmentTool,
   registerTelegramCommands,
   registerTelegramLifecycleHooks,
+  TELEGRAM_BOT_COMMAND_LIMIT,
 } from "../lib/registration.ts";
 
 function createRegistrationApiHarness() {
@@ -135,6 +137,61 @@ test("Registration connect and disconnect commands reload config and control pol
     "stop",
     "update-status",
   ]);
+});
+
+test("Telegram bot command menu includes valid pi prompt, skill, and extension commands", () => {
+  const commands = buildTelegramBotCommands([
+    { name: "p", description: "Run prompt template" },
+    { name: "skill_cmd", description: "Run skill command" },
+    { name: "ext_cmd", description: "Run extension command" },
+    { name: "status", description: "Duplicate should not replace local status" },
+    { name: "bad-name", description: "Telegram rejects hyphenated names" },
+    { name: "review:1", description: "Telegram rejects colon suffixed names" },
+    { name: "UPPER", description: "Telegram rejects uppercase names" },
+    { name: "x".repeat(33), description: "Telegram rejects long names" },
+  ] as never);
+
+  assert.deepEqual(
+    commands.map((command) => command.command).slice(0, 12),
+    [
+      "start",
+      "help",
+      "status",
+      "trace",
+      "model",
+      "compact",
+      "stop",
+      "quit",
+      "exit",
+      "p",
+      "skill_cmd",
+      "ext_cmd",
+    ],
+  );
+  assert.equal(
+    commands.find((command) => command.command === "status")?.description,
+    "Show model, usage, cost, and context status",
+  );
+  assert.equal(commands.some((command) => command.command === "bad-name"), false);
+  assert.equal(commands.some((command) => command.command === "review:1"), false);
+  assert.equal(commands.some((command) => command.command === "UPPER"), false);
+  assert.equal(commands.some((command) => command.command.length > 32), false);
+});
+
+test("Telegram bot command menu is capped at the Bot API command limit", () => {
+  const piCommands = Array.from({ length: TELEGRAM_BOT_COMMAND_LIMIT + 20 }, (_, index) => ({
+    name: `cmd_${index}`,
+    description: `Command ${index}`,
+  }));
+  const commands = buildTelegramBotCommands(piCommands as never);
+
+  assert.equal(commands.length, TELEGRAM_BOT_COMMAND_LIMIT);
+  assert.equal(commands.at(0)?.command, "start");
+  assert.equal(commands.some((command) => command.command === "cmd_0"), true);
+  assert.equal(
+    commands.some((command) => command.command === `cmd_${TELEGRAM_BOT_COMMAND_LIMIT}`),
+    false,
+  );
 });
 
 test("Registration lifecycle hooks are registered and delegate to the provided handlers", async () => {

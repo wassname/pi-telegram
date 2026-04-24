@@ -135,6 +135,7 @@ The bridge exposes Telegram-side session controls in addition to regular chat fo
 
 Current operator controls include:
 
+- `/start` for help and Telegram bot command-menu refresh. The menu publishes bridge-local controls first, then Telegram-valid pi commands from `pi.getCommands()`, including prompt, skill, and extension commands such as `/p` when pi exposes them.
 - `/status` for model, usage, cost, and context visibility, queued as a high-priority control item when needed
 - Inline status buttons for model and thinking adjustments, applying idle selections immediately while still respecting busy-run restart rules
 - `/model` for interactive model selection, queued as a high-priority control item when needed and supporting in-flight restart of the active Telegram-owned run on a newly selected model

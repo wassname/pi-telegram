@@ -7,6 +7,7 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
+  SlashCommandInfo,
 } from "@mariozechner/pi-coding-agent";
 
 import { queueTelegramAttachments } from "./attachments.ts";
@@ -64,6 +65,52 @@ export function registerTelegramAttachmentTool(
 }
 
 // --- Command Registration ---
+
+export interface TelegramBotCommand {
+  command: string;
+  description: string;
+}
+
+export const TELEGRAM_BOT_COMMAND_LIMIT = 100;
+
+const telegramCommandNamePattern = /^[a-z0-9_]{1,32}$/;
+
+const bridgeLocalBotCommands: TelegramBotCommand[] = [
+  { command: "start", description: "Show help and refresh this menu" },
+  { command: "help", description: "Show help" },
+  { command: "status", description: "Show model, usage, cost, and context status" },
+  { command: "trace", description: "Cycle display mode: text / compact / full" },
+  { command: "model", description: "Open the interactive model selector" },
+  { command: "compact", description: "Compact the current pi session" },
+  { command: "stop", description: "Abort the current pi task" },
+  { command: "quit", description: "Stop the Telegram bridge in this session" },
+  { command: "exit", description: "Stop the Telegram bridge in this session" },
+];
+
+export function buildTelegramBotCommands(
+  piCommands: Pick<SlashCommandInfo, "name" | "description">[],
+): TelegramBotCommand[] {
+  const commands: TelegramBotCommand[] = [];
+  const names = new Set<string>();
+  const addCommand = (command: TelegramBotCommand) => {
+    if (names.has(command.command)) return;
+    if (!telegramCommandNamePattern.test(command.command)) return;
+    names.add(command.command);
+    commands.push(command);
+  };
+
+  for (const command of bridgeLocalBotCommands) {
+    addCommand(command);
+  }
+  for (const command of piCommands) {
+    addCommand({
+      command: command.name,
+      description: command.description ?? command.name,
+    });
+  }
+
+  return commands.slice(0, TELEGRAM_BOT_COMMAND_LIMIT);
+}
 
 export interface TelegramCommandRegistrationDeps {
   promptForConfig: (ctx: ExtensionCommandContext) => Promise<void>;

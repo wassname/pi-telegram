@@ -75,6 +75,7 @@ import {
   type TelegramQueueItem,
 } from "./lib/queue.ts";
 import {
+  buildTelegramBotCommands,
   registerTelegramAttachmentTool,
   registerTelegramCommands,
   registerTelegramLifecycleHooks,
@@ -253,11 +254,6 @@ interface TelegramGetFileResult {
 
 interface TelegramSentMessage {
   message_id: number;
-}
-
-interface TelegramBotCommand {
-  command: string;
-  description: string;
 }
 
 // --- Extension State Types ---
@@ -1051,27 +1047,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function registerTelegramBotCommands(): Promise<void> {
-    const localCommands: TelegramBotCommand[] = [
-      { command: "start", description: "Show help" },
-      { command: "status", description: "Show model, usage, cost, and context status" },
-      { command: "trace", description: "Cycle display mode: text / compact / full" },
-      { command: "model", description: "Open the interactive model selector" },
-      { command: "compact", description: "Compact the current pi session" },
-      { command: "stop", description: "Abort the current pi task" },
-    ];
-    const localNames = new Set(localCommands.map((c) => c.command));
-    const telegramCommandNamePattern = /^[a-z0-9_]{1,32}$/;
-    const extensionCommands: TelegramBotCommand[] = pi.getCommands()
-      .filter((c: { name: string; description?: string; source?: string }) =>
-        c.source === "extension" &&
-        !localNames.has(c.name) &&
-        telegramCommandNamePattern.test(c.name),
-      )
-      .map((c: { name: string; description?: string }) => ({
-        command: c.name,
-        description: c.description ?? c.name,
-      }));
-    const commands = [...localCommands, ...extensionCommands];
+    const commands = buildTelegramBotCommands(pi.getCommands());
     await callTelegramApi<boolean>("setMyCommands", { commands });
   }
 
@@ -1798,7 +1774,7 @@ export default function (pi: ExtensionAPI) {
     ctx: ExtensionContext,
   ): Promise<void> {
     let helpText =
-      "Send me a message and I will forward it to pi.\n\nLocal: /status, /trace, /model, /compact, /stop, /quit\nOther /commands and ! shell commands pass through to pi directly.";
+      "Send me a message and I will forward it to pi.\n\nLocal: /status, /trace, /model, /compact, /stop, /quit\n/start refreshes Telegram's command menu with local controls plus valid pi prompt, skill, and extension commands.\nOther /commands and ! shell commands pass through to pi directly.";
 
     if (commandName === "start") {
       try {
