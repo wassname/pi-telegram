@@ -53,6 +53,23 @@ export interface TelegramPreviewRuntimeDeps {
   ) => Promise<number | undefined>;
 }
 
+const PREVIEW_TRUNCATION_NOTICE = "\n[preview truncated]";
+
+function truncateTelegramPreviewText(
+  text: string,
+  maxMessageLength: number,
+): string {
+  if (text.length <= maxMessageLength) return text;
+  if (maxMessageLength <= PREVIEW_TRUNCATION_NOTICE.length + 1) {
+    return text.slice(0, maxMessageLength);
+  }
+  const visibleLength = Math.max(
+    0,
+    maxMessageLength - PREVIEW_TRUNCATION_NOTICE.length - 1,
+  );
+  return `${text.slice(0, visibleLength)}…${PREVIEW_TRUNCATION_NOTICE}`;
+}
+
 export function buildTelegramPreviewFlushText(options: {
   state: TelegramPreviewStateLike;
   maxMessageLength: number;
@@ -63,9 +80,7 @@ export function buildTelegramPreviewFlushText(options: {
   if (!previewText || previewText === options.state.lastSentText) {
     return undefined;
   }
-  return previewText.length > options.maxMessageLength
-    ? previewText.slice(0, options.maxMessageLength)
-    : previewText;
+  return truncateTelegramPreviewText(previewText, options.maxMessageLength);
 }
 
 export function buildTelegramPreviewFinalText(

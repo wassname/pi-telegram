@@ -130,13 +130,13 @@ test("Reply previews truncate long flush text and compute final text fallback", 
     buildTelegramPreviewFlushText({
       state: {
         mode: "message",
-        pendingText: "abcdef",
+        pendingText: "abcdefghijklmnopqrstuvwxyz",
         lastSentText: "",
       },
-      maxMessageLength: 3,
+      maxMessageLength: 24,
       renderPreviewText: (markdown) => markdown,
     }),
-    "abc",
+    "abc…\n[preview truncated]",
   );
   assert.equal(
     buildTelegramPreviewFinalText({

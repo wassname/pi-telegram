@@ -103,11 +103,19 @@ Key rules:
 
 The renderer is a Telegram-specific formatter, not a general Markdown engine, so rendering changes should be treated as regression-prone.
 
-### Trace Visibility
+### Trace Display Modes
 
-When trace visibility is on (default), thinking blocks and tool-call blocks from the assistant are included in both streaming previews and final replies. During streaming, trace blocks appear as compact one-line summaries (e.g. `🧠 Thinking...`, `🔧 tool_name`). In the final transcript, they render as quoted Markdown blocks with more detail.
+Telegram trace rendering uses three session-local display modes:
 
-Trace visibility is toggled per session via `/trace` or the inline button on the `/status` menu. The state is stored in `traceVisible` (boolean, default `true`) and flows through the rendering helpers in `/lib/rendering.ts`.
+- `text`: hide thinking and tool blocks
+- `compact`: show shortened thinking/tool blocks and mark any truncation explicitly with a “use /trace for full” notice
+- `full`: show the complete final trace content
+
+During streaming, trace blocks still appear as compact one-line summaries (e.g. `🧠 Thinking...`, `🔧 tool_name`). Final replies use the selected display mode through `/trace` and the status menu helpers.
+
+### Abort Recovery
+
+`/stop` still aborts the active Telegram-owned pi turn, but the bridge now also tracks locally requested aborts. If pi has already returned to an idle/no-pending-message state and the bridge still holds stale active-turn state from that abort, the next Telegram message clears the stale local turn and resumes dispatch instead of staying wedged.
 
 ## Streaming And Delivery
 

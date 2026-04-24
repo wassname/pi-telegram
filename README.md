@@ -21,7 +21,7 @@ It started from upstream commit [`cb34008460b6c1ca036d92322f69d87f626be0fc`](htt
 
 Compared to upstream commit `cb34008`, this fork significantly extends and hardens the extension.
 
-- Better Telegram control UI, including an improved `/status` view with inline buttons for model and thinking selection, and trace visibility toggle for thinking/tool-call blocks
+- Better Telegram control UI, including an improved `/status` view with inline buttons for model and thinking selection, and trace display controls for thinking/tool-call blocks
 - Interactive model selection improvements, including scoped model lists, thinking-level control for reasoning-capable models, and in-flight restart on a newly selected model for active Telegram-owned runs
 - Queueing and interaction upgrades, including queue previews, reaction-based prioritization/removal, media-group handling, high-priority control actions, and safer dispatch behavior
 - Markdown and reply rendering improvements, with richer formatting support, narrow-client-friendly table/list rendering, quote compatibility fixes, and multiple fixes for incorrect Telegram rendering and chunking edge cases
@@ -122,7 +122,7 @@ Additional fork-specific controls:
 - `/status` now has a richer view with inline buttons for model and thinking controls, and joins the high-priority control queue when pi is busy
 - `/model` opens the interactive model selector, applies idle selections immediately, joins the high-priority control queue when pi is busy, and can restart the active Telegram-owned run on the newly selected model, waiting for the current tool call to finish when needed
 - `/compact` starts session compaction when pi and the Telegram queue are idle
-- `/trace` toggles visibility of thinking and tool-call blocks in Telegram replies (on by default)
+- `/trace` cycles Telegram trace display mode: `text` hides trace blocks, `compact` shows shortened trace blocks with an explicit truncation notice, and `full` shows the complete final trace
 - Queue reactions: `👍` prioritizes a waiting turn, `👎` removes it
 
 ### Send text
@@ -166,6 +166,8 @@ or:
 
 That aborts the active pi turn.
 
+If pi becomes locally idle but the Telegram bridge still holds stale local state for the aborted turn, the next Telegram message clears that stale state and resumes normal dispatch.
+
 ### Queue follow-ups
 
 If you send more Telegram messages while pi is busy, they are queued and processed in order.
@@ -202,6 +204,10 @@ Message reactions depend on Telegram delivering `message_reaction` updates for y
 The extension streams assistant text previews back to Telegram while pi is generating.
 
 It tries Telegram draft streaming first with `sendMessageDraft`. If that is not supported for your bot, it falls back to `sendMessage` plus `editMessageText`.
+
+Compact trace mode marks shortened thinking/tool blocks explicitly instead of silently cropping them. Full trace mode keeps the complete final trace content.
+
+Direct `!` shell command replies are delivered in full across Telegram-safe chunks instead of being cut to the first screenful.
 
 ## Notes
 

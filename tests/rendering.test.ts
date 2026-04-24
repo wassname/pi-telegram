@@ -33,7 +33,8 @@ test("renderBlockMessage truncates thinking in compact mode", () => {
   const compact = renderBlockMessage(block, "compact")!;
   const full = renderBlockMessage(block, "full")!;
   assert.ok(compact.length < full.length);
-  assert.ok(compact.includes("…"));
+  assert.match(compact, /\[compact trace truncated; use \/trace for full\]/);
+  assert.ok(full.includes(longText));
 });
 
 test("renderBlockMessage renders tool_call block", () => {
@@ -70,7 +71,20 @@ test("renderBlockMessage truncates tool_result in compact mode", () => {
   const compact = renderBlockMessage(block, "compact")!;
   const full = renderBlockMessage(block, "full")!;
   assert.ok(compact.length < full.length);
-  assert.ok(compact.includes("…"));
+  assert.match(compact, /\[compact trace truncated; use \/trace for full\]/);
+  assert.ok(full.includes("x".repeat(600)));
+});
+
+test("renderBlockMessage marks truncated tool_call args in compact mode", () => {
+  const block = {
+    type: "tool_call" as const,
+    name: "write_file",
+    argsText: "x".repeat(600),
+  };
+  const compact = renderBlockMessage(block, "compact")!;
+  const full = renderBlockMessage(block, "full")!;
+  assert.match(compact, /\[compact trace truncated; use \/trace for full\]/);
+  assert.ok(full.includes("x".repeat(600)));
 });
 
 test("Nested lists stay out of code blocks", () => {

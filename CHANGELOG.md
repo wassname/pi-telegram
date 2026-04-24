@@ -2,6 +2,9 @@
 
 ## Current
 
+- `[Runtime]` Fixed Telegram slash-command routing so `/stop`, `/status`, `/model`, and other local commands receive the real Telegram message and pi context instead of the wrong argument positions. Added stale-abort recovery so if pi is already idle but the bridge still thinks an aborted Telegram turn is active, the next Telegram message clears the stale local state and dispatch resumes. Impact: Telegram no longer gets permanently wedged while local `!` commands still work.
+- `[Trace + Shell Output]` Compact trace mode now marks shortened thinking/tool blocks explicitly with a “use /trace for full” notice, full mode keeps the complete final trace, and direct `!` shell replies are delivered through chunked Telegram-safe markdown instead of silently slicing off the tail. Impact: trace and shell output truncation is visible instead of hidden, and verbose output remains available.
+
 - `[Security]` Removed auto-pair-on-first-DM behavior. The bot now requires `allowedUserId` to be set before polling starts. Configure it via `TELEGRAM_ALLOWED_USER_ID` env var or the updated `/telegram-setup` prompt (which now asks for a numeric user ID after the bot token). The env var takes precedence over the saved config on every session start. Denied senders get an auth error reply; their numeric ID is also logged to the pi TUI as a warning. Breaking change: fresh installs require explicit configuration; existing installs with `allowedUserId` already in `telegram.json` continue to work unchanged.
 
 

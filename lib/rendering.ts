@@ -13,9 +13,17 @@ export type TelegramAssistantDisplayBlock =
   | { type: "tool_call"; name: string; argsText?: string }
   | { type: "tool_result"; text: string; toolName?: string };
 
-function truncateDisplayText(text: string, maxLength: number): string {
-  if (text.length <= maxLength) return text;
-  return `${text.slice(0, Math.max(0, maxLength - 1))}…`;
+function truncateDisplayText(
+  text: string,
+  maxLength: number,
+): { text: string; truncated: boolean } {
+  if (text.length <= maxLength) {
+    return { text, truncated: false };
+  }
+  return {
+    text: `${text.slice(0, Math.max(0, maxLength - 1))}…`,
+    truncated: true,
+  };
 }
 
 function renderMarkdownQuote(text: string): string {
@@ -35,6 +43,7 @@ function renderToolArgsMarkdown(argsText: string): string {
 }
 
 const COMPACT_TRUNCATE = 500;
+const COMPACT_TRUNCATION_NOTICE = "[compact trace truncated; use /trace for full]";
 
 export function renderBlockMessage(
   block: TelegramAssistantDisplayBlock,
@@ -45,21 +54,36 @@ export function renderBlockMessage(
   if (block.type === "thinking") {
     const trimmed = block.text.trim();
     if (!trimmed) return undefined;
-    const content = mode === "compact" ? truncateDisplayText(trimmed, COMPACT_TRUNCATE) : trimmed;
+    const truncated =
+      mode === "compact"
+        ? truncateDisplayText(trimmed, COMPACT_TRUNCATE)
+        : { text: trimmed, truncated: false };
+    const content = truncated.truncated
+      ? `${truncated.text}\n${COMPACT_TRUNCATION_NOTICE}`
+      : truncated.text;
     return `**Thinking**\n${renderMarkdownQuote(content)}`;
   }
 
   if (block.type === "tool_call") {
     const argsText = block.argsText ?? "";
-    const displayArgs = mode === "compact" ? truncateDisplayText(argsText, COMPACT_TRUNCATE) : argsText;
-    return `**Tool call** \`${block.name}\`${displayArgs ? renderToolArgsMarkdown(displayArgs) : ""}`;
+    const truncated =
+      mode === "compact"
+        ? truncateDisplayText(argsText, COMPACT_TRUNCATE)
+        : { text: argsText, truncated: false };
+    return `**Tool call** \`${block.name}\`${truncated.text ? renderToolArgsMarkdown(truncated.text) : ""}${truncated.truncated ? `\n\n${COMPACT_TRUNCATION_NOTICE}` : ""}`;
   }
 
   if (block.type === "tool_result") {
     if (mode === "text") return undefined;
     const trimmed = block.text.trim();
     if (!trimmed) return undefined;
-    const content = mode === "compact" ? truncateDisplayText(trimmed, COMPACT_TRUNCATE) : trimmed;
+    const truncated =
+      mode === "compact"
+        ? truncateDisplayText(trimmed, COMPACT_TRUNCATE)
+        : { text: trimmed, truncated: false };
+    const content = truncated.truncated
+      ? `${truncated.text}\n${COMPACT_TRUNCATION_NOTICE}`
+      : truncated.text;
     const header = block.toolName ? `**Tool result** \`${block.toolName}\`` : "**Tool result**";
     return `${header}\n${renderMarkdownQuote(content)}`;
   }
