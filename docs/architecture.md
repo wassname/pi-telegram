@@ -109,9 +109,9 @@ Telegram trace rendering uses three session-local display modes:
 
 - `text`: hide thinking and tool blocks
 - `compact`: show shortened thinking/tool blocks and mark any truncation explicitly with a “use /trace for full” notice
-- `full`: show the complete final trace content
+- `full`: show complete final trace content, including tool results
 
-During streaming, trace blocks still appear as compact one-line summaries (e.g. `🧠 Thinking...`, `🔧 tool_name`). Final replies use the selected display mode through `/trace` and the status menu helpers.
+During streaming, trace blocks still appear as compact one-line summaries (e.g. `🧠 Thinking...`, `🔧 tool_name`). Final replies use the selected display mode through `/trace` and the status menu helpers. Tool-result messages are rendered as trace blocks instead of being dropped; bash output is shown in code blocks, and saved full-output files are read back for full trace mode when pi provides a `fullOutputPath`.
 
 ### Abort Recovery
 

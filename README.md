@@ -206,7 +206,7 @@ The extension streams assistant text previews back to Telegram while pi is gener
 
 It tries Telegram draft streaming first with `sendMessageDraft`. If that is not supported for your bot, it falls back to `sendMessage` plus `editMessageText`.
 
-Compact trace mode marks shortened thinking/tool blocks explicitly instead of silently cropping them. Full trace mode keeps the complete final trace content.
+Compact trace mode marks shortened thinking/tool blocks explicitly instead of silently cropping them. Full trace mode keeps complete trace content, includes tool results, and uses a tool's saved full-output file when pi provides one.
 
 Direct `!` shell command replies are delivered in full across Telegram-safe chunks instead of being cut to the first screenful.
 

@@ -1308,6 +1308,185 @@ test("Extension runtime finalizes a drafted preview into the final Telegram repl
   }
 });
 
+test("Extension runtime sends toolResult output blocks in Telegram trace", async () => {
+  const agentDir = join(homedir(), ".pi", "agent");
+  const configPath = join(agentDir, "telegram.json");
+  const previousConfig = await readFile(configPath, "utf8").catch(
+    () => undefined,
+  );
+  const handlers = new Map<
+    string,
+    (event: unknown, ctx: unknown) => Promise<unknown>
+  >();
+  const commands = new Map<
+    string,
+    { handler: (args: string, ctx: unknown) => Promise<void> }
+  >();
+  let resolveDispatch: (() => void) | undefined;
+  const dispatched = new Promise<void>((resolve) => {
+    resolveDispatch = resolve;
+  });
+  const sentTexts: string[] = [];
+  const pi = {
+    on: (
+      event: string,
+      handler: (event: unknown, ctx: unknown) => Promise<unknown>,
+    ) => {
+      handlers.set(event, handler);
+    },
+    registerCommand: (
+      name: string,
+      definition: { handler: (args: string, ctx: unknown) => Promise<void> },
+    ) => {
+      commands.set(name, definition);
+    },
+    registerTool: () => {},
+    sendUserMessage: () => {
+      resolveDispatch?.();
+    },
+    getThinkingLevel: () => "medium",
+  } as never;
+  const originalFetch = globalThis.fetch;
+  let getUpdatesCalls = 0;
+  const fullOutputPath = join("/tmp", "pi-telegram-full-output-test.txt");
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input.toString();
+    const method = url.split("/").at(-1) ?? "";
+    const body =
+      typeof init?.body === "string"
+        ? (JSON.parse(init.body) as Record<string, unknown>)
+        : undefined;
+    if (method === "deleteWebhook") {
+      return { json: async () => ({ ok: true, result: true }) } as Response;
+    }
+    if (method === "getUpdates") {
+      getUpdatesCalls += 1;
+      if (getUpdatesCalls === 1) {
+        return {
+          json: async () => ({
+            ok: true,
+            result: [
+              {
+                _: "other",
+                update_id: 1,
+                message: {
+                  message_id: 7,
+                  chat: { id: 99, type: "private" },
+                  from: { id: 77, is_bot: false, first_name: "Test" },
+                  text: "run status",
+                },
+              },
+            ],
+          }),
+        } as Response;
+      }
+      throw new DOMException("stop", "AbortError");
+    }
+    if (method === "sendMessageDraft") {
+      return { json: async () => ({ ok: true, result: true }) } as Response;
+    }
+    if (method === "sendMessage") {
+      sentTexts.push(String(body?.text ?? ""));
+      return {
+        json: async () => ({
+          ok: true,
+          result: { message_id: 100 + sentTexts.length },
+        }),
+      } as Response;
+    }
+    if (method === "sendChatAction") {
+      return { json: async () => ({ ok: true, result: true }) } as Response;
+    }
+    if (method === "editMessageText") {
+      return { json: async () => ({ ok: true, result: true }) } as Response;
+    }
+    throw new Error(`Unexpected Telegram API method: ${method}`);
+  };
+  try {
+    await mkdir(agentDir, { recursive: true });
+    await writeFile(
+      configPath,
+      JSON.stringify(
+        { botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 },
+        null,
+        "\t",
+      ) + "\n",
+      "utf8",
+    );
+    telegramExtension(pi);
+    const ctx = {
+      hasUI: true,
+      model: undefined,
+      signal: undefined,
+      ui: {
+        theme: {
+          fg: (_token: string, text: string) => text,
+        },
+        setStatus: () => {},
+        notify: () => {},
+      },
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      abort: () => {},
+      getContextUsage: () => undefined,
+    } as never;
+    await handlers.get("session_start")?.({}, ctx);
+    await commands.get("telegram-connect")?.handler("", ctx);
+    await dispatched;
+    await handlers.get("agent_start")?.({}, ctx);
+    await writeFile(fullOutputPath, "full output from saved file\nline 2", "utf8");
+    await handlers.get("agent_end")?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "call_1",
+                name: "bash",
+                arguments: { command: "printf 'visible output\\n'" },
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_1",
+            toolName: "bash",
+            content: [{ type: "text", text: "tail only\nexit code: 0" }],
+            details: { fullOutputPath },
+            isError: false,
+          },
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "Final answer" }],
+          },
+        ],
+      },
+      ctx,
+    );
+    assert.equal(
+      sentTexts.some(
+        (text) =>
+          text.includes("Tool result") &&
+          text.includes("bash") &&
+          text.includes("full output from saved file") &&
+          !text.includes("tail only"),
+      ),
+      true,
+    );
+    await handlers.get("session_shutdown")?.({}, ctx);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(fullOutputPath, { force: true });
+    if (previousConfig === undefined) {
+      await rm(configPath, { force: true });
+    } else {
+      await writeFile(configPath, previousConfig, "utf8");
+    }
+  }
+});
+
 test("Extension runtime carries queued follow-ups into history after an aborted turn", async () => {
   const agentDir = join(homedir(), ".pi", "agent");
   const configPath = join(agentDir, "telegram.json");

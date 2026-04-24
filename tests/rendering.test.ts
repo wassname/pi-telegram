@@ -66,6 +66,21 @@ test("renderBlockMessage renders tool_result and hides it in text mode", () => {
   assert.ok(full.includes("file contents here"));
 });
 
+test("renderBlockMessage formats bash tool_result output as visible code", () => {
+  const block = {
+    type: "tool_result" as const,
+    text: "line 1\rline 2\nCommand exited with code 0",
+    toolName: "bash",
+    detailsText: '{\n  "fullOutputPath": "/tmp/full-output.txt"\n}',
+  };
+  const result = renderBlockMessage(block, "full")!;
+  assert.match(result, /\*\*Tool result\*\* `bash`/);
+  assert.match(result, /\*\*output\*\*/);
+  assert.match(result, /```text\nline 1\nline 2\nCommand exited with code 0\n```/);
+  assert.match(result, /\*\*details\*\*/);
+  assert.match(result, /fullOutputPath/);
+});
+
 test("renderBlockMessage truncates tool_result in compact mode", () => {
   const block = { type: "tool_result" as const, text: "x".repeat(600) };
   const compact = renderBlockMessage(block, "compact")!;
@@ -73,6 +88,18 @@ test("renderBlockMessage truncates tool_result in compact mode", () => {
   assert.ok(compact.length < full.length);
   assert.match(compact, /\[compact trace truncated; use \/trace for full\]/);
   assert.ok(full.includes("x".repeat(600)));
+});
+
+test("renderBlockMessage renders unknown trace blocks instead of dropping them", () => {
+  const block = {
+    type: "unknown" as const,
+    label: "server_tool_result",
+    text: '{\n  "output": "visible fallback"\n}',
+  };
+  const result = renderBlockMessage(block, "full")!;
+  assert.match(result, /\*\*Trace block\*\* `server_tool_result`/);
+  assert.match(result, /visible fallback/);
+  assert.equal(renderBlockMessage(block, "text"), undefined);
 });
 
 test("renderBlockMessage marks truncated tool_call args in compact mode", () => {

@@ -681,6 +681,31 @@ export default function (pi: ExtensionAPI) {
     return encoded?.trim() || undefined;
   }
 
+  function stringifyTraceFallback(value: unknown): string | undefined {
+    if (value === undefined) return undefined;
+    if (typeof value === "string") return value.trim() || undefined;
+    try {
+      return JSON.stringify(value, null, 2)?.trim() || undefined;
+    } catch {
+      return String(value).trim() || undefined;
+    }
+  }
+
+  function extractTextBlocksContent(content: unknown): string {
+    if (typeof content === "string") return content.trim();
+    if (!Array.isArray(content)) return "";
+    return content
+      .map((block) => {
+        if (typeof block !== "object" || block === null) return "";
+        const candidate = block as Record<string, unknown>;
+        return candidate.type === "text" && typeof candidate.text === "string"
+          ? candidate.text
+          : "";
+      })
+      .join("")
+      .trim();
+  }
+
   function normalizeAssistantDisplayBlock(
     block: unknown,
   ): TelegramAssistantDisplayBlock | undefined {
@@ -723,7 +748,51 @@ export default function (pi: ExtensionAPI) {
         ),
       };
     }
+    const fallback = stringifyTraceFallback(candidate);
+    if (fallback) {
+      return {
+        type: "unknown",
+        label: String(candidate.type),
+        text: fallback,
+      };
+    }
     return undefined;
+  }
+
+  function getToolResultFullOutputPath(details: unknown): string | undefined {
+    if (typeof details !== "object" || details === null) return undefined;
+    const path = (details as Record<string, unknown>).fullOutputPath;
+    return typeof path === "string" && path.trim() ? path : undefined;
+  }
+
+  async function readToolResultFullOutput(details: unknown): Promise<string | undefined> {
+    const path = getToolResultFullOutputPath(details);
+    if (!path) return undefined;
+    return readFile(path, "utf8").catch(() => undefined);
+  }
+
+  async function extractToolResultBlock(
+    message: Record<string, unknown>,
+  ): Promise<TelegramAssistantDisplayBlock | undefined> {
+    if (message.role !== "toolResult") return undefined;
+    const toolName =
+      typeof message.toolName === "string" ? message.toolName : undefined;
+    const text = extractTextBlocksContent(message.content);
+    const fullOutput = await readToolResultFullOutput(message.details);
+    const detailsText = stringifyTraceFallback(message.details);
+    const fallbackText = stringifyTraceFallback({
+      content: message.content,
+      details: message.details,
+    });
+    const outputText = fullOutput?.trimEnd() || text || fallbackText;
+    if (!outputText && !detailsText) return undefined;
+    return {
+      type: "tool_result",
+      toolName,
+      text: outputText ?? "",
+      detailsText,
+      isError: message.isError === true,
+    };
   }
 
   function extractAssistantDisplayBlocks(
@@ -758,18 +827,23 @@ export default function (pi: ExtensionAPI) {
     );
   }
 
-  function extractAssistantTurn(messages: AgentMessage[]): {
+  async function extractAssistantTurn(messages: AgentMessage[]): Promise<{
     blocks: TelegramAssistantDisplayBlock[];
     text?: string;
     stopReason?: string;
     errorMessage?: string;
-  } {
+  }> {
     const blocks: TelegramAssistantDisplayBlock[] = [];
     let text: string | undefined;
     let stopReason: string | undefined;
     let errorMessage: string | undefined;
     for (const next of messages) {
       const message = next as unknown as Record<string, unknown>;
+      const toolResultBlock = await extractToolResultBlock(message);
+      if (toolResultBlock) {
+        blocks.push(toolResultBlock);
+        continue;
+      }
       if (message.role !== "assistant") continue;
       const nextBlocks = extractAssistantDisplayBlocks(message.content);
       blocks.push(...nextBlocks);
@@ -964,12 +1038,12 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  function extractAssistantSummary(messages: AgentMessage[]): {
+  async function extractAssistantSummary(messages: AgentMessage[]): Promise<{
     blocks: TelegramAssistantDisplayBlock[];
     text?: string;
     stopReason?: string;
     errorMessage?: string;
-  } {
+  }> {
     return extractAssistantTurn(messages);
   }
 
@@ -2180,7 +2254,7 @@ export default function (pi: ExtensionAPI) {
       telegramTurnDispatchPending = false;
       updateStatus(ctx);
       const assistant = turn
-        ? extractAssistantSummary((event as { messages: AgentMessage[] }).messages)
+        ? await extractAssistantSummary((event as { messages: AgentMessage[] }).messages)
         : { blocks: [], text: undefined, stopReason: undefined, errorMessage: undefined };
 
       const endPlan = buildTelegramAgentEndPlan({
@@ -2208,8 +2282,13 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      // Flush any non-text blocks from the final message (single-message turns never trigger onMessageStart)
-      for (const block of pendingNonTextBlocks) {
+      // Flush tool results from the completed transcript plus any non-text blocks
+      // from the final assistant message (single-message turns never trigger onMessageStart).
+      const finalTraceBlocks = [
+        ...assistant.blocks.filter((block) => block.type === "tool_result"),
+        ...pendingNonTextBlocks,
+      ];
+      for (const block of finalTraceBlocks) {
         const msg = renderBlockMessage(block, displayMode);
         if (msg) void sendMarkdownReply(turn.chatId, turn.replyToMessageId, msg);
       }

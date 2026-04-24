@@ -11,6 +11,7 @@ Out: broader queue-policy redesign, non-Telegram pi abort semantics, and new tra
 - R1: A stale aborted Telegram turn cannot block later Telegram prompts forever. Done means: when local Telegram turn state survives after pi is already idle, the next Telegram message recovers the bridge and normal prompt dispatch resumes. VERIFY: targeted runtime regression shows `/stop`, no `agent_end`, then a later Telegram prompt dispatches into pi. If it silently failed, the test would still be stuck waiting for another dispatch.
 - R2: Direct `!` shell replies do not silently crop output. Done means: long stdout/stderr are delivered through chunked markdown replies instead of a hidden `slice(0, 3900)`. VERIFY: targeted regression inspects the emitted shell reply text and confirms the tail of long output is still present.
 - R3: Any compact trace truncation is explicit, and full trace mode stays untruncated. Done means: compact thinking/tool blocks include a visible “use /trace for full” notice when shortened, while full-mode tests still see the complete content. VERIFY: rendering tests assert the truncation notice in compact mode and the original long text in full mode.
+- R5: Telegram trace rendering does not silently drop tool results or unknown assistant blocks. Done means: `toolResult` messages become trace blocks, bash results show their output in code blocks, and unrecognized assistant blocks fall back to JSON instead of disappearing. VERIFY: rendering tests cover bash result formatting and unknown-block fallback; queue/runtime tests cover final tool-result delivery.
 - R4: User-facing docs describe the actual `/trace` behavior and the new recovery/truncation guarantees. Done means: README, architecture doc, and changelog all reflect the shipped behavior. VERIFY: grep/read shows aligned wording in all three docs.
 
 ## Tasks
@@ -35,6 +36,13 @@ Out: broader queue-policy redesign, non-Telegram pi abort semantics, and new tra
   - likely_fail: runtime changes land without doc updates, so the grep output is missing one of the files.
   - sneaky_fail: docs still describe `/trace` as a simple on/off toggle instead of text/compact/full.
   - UAT: "when I read the docs, they match what the Telegram bot actually does."
+- [x] T4 (R5): Preserve all trace blocks, including tool results.
+  - steps: normalize unknown assistant blocks to JSON fallback, extract `role: "toolResult"` messages into trace blocks, format bash tool results with visible output/details sections, and send tool-result blocks at agent end.
+  - verify: `node --experimental-strip-types --test tests/rendering.test.ts tests/queue.test.ts`
+  - success: tests show bash output text in full trace and tool-result delivery in Telegram runtime.
+  - likely_fail: only tool-call blocks are emitted; runtime test sees no "Tool result" Telegram message.
+  - sneaky_fail: unknown content blocks vanish; fallback test checks they render as JSON.
+  - UAT: "when a bash tool runs, Telegram trace full shows the command and actual output, not only the tool-call JSON."
 
 ## Context
 - The bridge keeps local queue and active-turn state separate from pi core state, so stale local state can wedge Telegram even when pi is already idle.
@@ -44,6 +52,8 @@ Out: broader queue-policy redesign, non-Telegram pi abort semantics, and new tra
 ## Log
 - Existing tests cover abort-plus-follow-up history, but they did not cover the stale-local-state path where pi is already idle and Telegram still thinks a turn is active.
 - The immediate `/stop` failure had a concrete routing bug too: slash commands were passed into `handleTelegramCommand()` with the wrong argument positions, so Telegram local commands could receive the wrong message/ctx objects while direct `!` shell commands still worked.
+- A later trace-full report showed that assistant tool-call blocks were rendered, but `role: "toolResult"` messages were not extracted into Telegram trace blocks, so the operator saw the bash JSON call without the command output.
+- `node --experimental-strip-types --test --test-force-exit tests/rendering.test.ts tests/queue.test.ts`: 69 tests passed after adding bash tool-result formatting, unknown-block fallback, and saved full-output hydration coverage.
 
 ## TODO
 - Consider exposing a clearer inline status indicator when the bridge auto-recovers a stale aborted turn.

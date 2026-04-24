@@ -11,7 +11,14 @@ export type TelegramAssistantDisplayBlock =
   | { type: "text"; text: string }
   | { type: "thinking"; text: string }
   | { type: "tool_call"; name: string; argsText?: string }
-  | { type: "tool_result"; text: string; toolName?: string };
+  | {
+      type: "tool_result";
+      text: string;
+      toolName?: string;
+      detailsText?: string;
+      isError?: boolean;
+    }
+  | { type: "unknown"; label: string; text: string };
 
 function truncateDisplayText(
   text: string,
@@ -45,6 +52,34 @@ function renderToolArgsMarkdown(argsText: string): string {
 const COMPACT_TRUNCATE = 500;
 const COMPACT_TRUNCATION_NOTICE = "[compact trace truncated; use /trace for full]";
 
+function renderMarkdownFenceBlock(language: string, text: string): string {
+  const fence = text.includes("```") && !text.includes("~~~") ? "~~~" : "```";
+  return `${fence}${language}\n${text}\n${fence}`;
+}
+
+function normalizeTraceOutputText(text: string): string {
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/\r(?!\n)/g, "\n")
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+function renderTracedTextSection(
+  label: string,
+  text: string,
+  mode: DisplayMode,
+  language = "text",
+): string | undefined {
+  const normalized = normalizeTraceOutputText(text).trimEnd();
+  if (!normalized) return undefined;
+  const truncated =
+    mode === "compact"
+      ? truncateDisplayText(normalized, COMPACT_TRUNCATE)
+      : { text: normalized, truncated: false };
+  const notice = truncated.truncated ? `\n${COMPACT_TRUNCATION_NOTICE}` : "";
+  return `**${label}**\n${renderMarkdownFenceBlock(language, truncated.text)}${notice}`;
+}
+
 export function renderBlockMessage(
   block: TelegramAssistantDisplayBlock,
   mode: DisplayMode,
@@ -75,17 +110,29 @@ export function renderBlockMessage(
 
   if (block.type === "tool_result") {
     if (mode === "text") return undefined;
-    const trimmed = block.text.trim();
-    if (!trimmed) return undefined;
-    const truncated =
-      mode === "compact"
-        ? truncateDisplayText(trimmed, COMPACT_TRUNCATE)
-        : { text: trimmed, truncated: false };
-    const content = truncated.truncated
-      ? `${truncated.text}\n${COMPACT_TRUNCATION_NOTICE}`
-      : truncated.text;
-    const header = block.toolName ? `**Tool result** \`${block.toolName}\`` : "**Tool result**";
-    return `${header}\n${renderMarkdownQuote(content)}`;
+    const sections: string[] = [];
+    const header = block.toolName
+      ? `**Tool result** \`${block.toolName}\`${block.isError ? " (error)" : ""}`
+      : `**Tool result**${block.isError ? " (error)" : ""}`;
+    sections.push(header);
+    const output = renderTracedTextSection(
+      block.toolName === "bash" ? "output" : "result",
+      block.text,
+      mode,
+      "text",
+    );
+    if (output) sections.push(output);
+    const details = block.detailsText
+      ? renderTracedTextSection("details", block.detailsText, mode, "json")
+      : undefined;
+    if (details) sections.push(details);
+    return sections.length > 1 ? sections.join("\n\n") : undefined;
+  }
+
+  if (block.type === "unknown") {
+    if (mode === "text") return undefined;
+    const content = renderTracedTextSection("content", block.text, mode, "json");
+    return content ? `**Trace block** \`${block.label}\`\n\n${content}` : undefined;
   }
 }
 
