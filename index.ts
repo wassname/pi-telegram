@@ -407,7 +407,22 @@ export const __telegramTestUtils = {
     ),
 };
 
+// Install once: a stray Telegram fetch rejection that escapes through a fire-and-forget
+// `void f()` would otherwise crash the host process under Node 22 (default
+// unhandledRejection = throw). Dropping the message is fine; killing the session is not.
+// Scoped to unhandledRejection only - we deliberately do NOT swallow uncaughtException,
+// since that could mask real bugs unrelated to this bridge.
+let unhandledRejectionHandlerInstalled = false;
+function installUnhandledRejectionHandler(): void {
+  if (unhandledRejectionHandlerInstalled) return;
+  unhandledRejectionHandlerInstalled = true;
+  process.on("unhandledRejection", (reason) => {
+    console.error("[pi-telegram] unhandledRejection (suppressed):", reason);
+  });
+}
+
 export default function (pi: ExtensionAPI) {
+  installUnhandledRejectionHandler();
   let config: TelegramConfig = {};
   let pollingController: AbortController | undefined;
   let pollingPromise: Promise<void> | undefined;
@@ -969,7 +984,9 @@ export default function (pi: ExtensionAPI) {
   function schedulePreviewFlush(chatId: number): void {
     if (!previewState || previewState.flushTimer) return;
     previewState.flushTimer = setTimeout(() => {
-      void flushPreview(chatId);
+      flushPreview(chatId).catch((err) =>
+        console.warn("[pi-telegram] flushPreview failed:", err),
+      );
     }, PREVIEW_THROTTLE_MS);
   }
 
@@ -1947,7 +1964,12 @@ export default function (pi: ExtensionAPI) {
         const state = mediaGroups.get(key);
         mediaGroups.delete(key);
         if (!state) return;
-        void dispatchAuthorizedTelegramMessages(state.messages, ctx);
+        dispatchAuthorizedTelegramMessages(state.messages, ctx).catch((err) =>
+          console.warn(
+            "[pi-telegram] dispatchAuthorizedTelegramMessages failed:",
+            err,
+          ),
+        );
       }, TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS);
       mediaGroups.set(key, existing);
       return;

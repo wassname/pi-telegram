@@ -65,6 +65,24 @@ test("answerTelegramCallbackQuery ignores Telegram API failures", async () => {
   }
 });
 
+test("callTelegram does not retry on non-transient errors", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    throw new Error("logic error, not a network blip");
+  }) as typeof fetch;
+  try {
+    await assert.rejects(
+      () => callTelegram("123:abc", "getMe", {}),
+      /logic error/,
+    );
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("Telegram API client resolves bot tokens lazily for wrapped calls", async () => {
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
