@@ -1861,22 +1861,47 @@ export default function (pi: ExtensionAPI) {
 
   async function handleHelpCommand(
     message: TelegramMessage,
-    commandName: string,
-    ctx: ExtensionContext,
+    _commandName: string,
+    _ctx: ExtensionContext,
   ): Promise<void> {
-    let helpText =
-      "Send me a message and I will forward it to pi.\n\nLocal: /status, /trace, /model, /compact, /stop, /quit\n/start refreshes Telegram's command menu with local controls plus valid pi prompt, skill, and extension commands.\nOther /commands and ! shell commands pass through to pi directly.";
+    // Always refresh the Telegram bot menu so late-registered pi commands
+    // (skills/prompts/extensions that registered after the initial /start)
+    // become discoverable. /help is the user-facing escape hatch when the
+    // menu drifts.
+    let menuWarning = "";
+    try {
+      await registerTelegramBotCommands();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      menuWarning = `\n\nWarning: failed to refresh bot commands menu: ${msg}`;
+    }
 
-    if (commandName === "start") {
-      try {
-        await registerTelegramBotCommands();
-      } catch (error) {
-        const errorMessage =
-          error instanceof Error ? error.message : String(error);
-        helpText += `\n\nWarning: failed to register bot commands menu: ${errorMessage}`;
+    const piCommands = pi.getCommands();
+    const lines: string[] = [
+      "Send a message to forward to pi. ! prefix runs a shell command.",
+      "",
+      "Bridge: /status /trace /model /compact /stop /quit /start /help",
+      "",
+      `Pi commands (${piCommands.length}):`,
+    ];
+    if (piCommands.length === 0) {
+      lines.push("  (none registered)");
+    } else {
+      const sorted = [...piCommands].sort((a, b) =>
+        a.name.localeCompare(b.name),
+      );
+      for (const c of sorted) {
+        const desc = c.description ? ` — ${c.description}` : "";
+        lines.push(`/${c.name}${desc}`);
       }
     }
-    await sendTextReply(message.chat.id, message.message_id, helpText);
+    lines.push("", "/help re-syncs Telegram's command menu.");
+
+    await sendTextReply(
+      message.chat.id,
+      message.message_id,
+      lines.join("\n") + menuWarning,
+    );
   }
 
   async function handleTelegramCommand(
