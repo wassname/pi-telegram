@@ -73,7 +73,25 @@ export interface TelegramBotCommand {
 
 export const TELEGRAM_BOT_COMMAND_LIMIT = 100;
 
+// Telegram requires command names to match ^[a-z0-9_]{1,32}$ (no dashes).
+// Pi commands frequently use dashes (e.g. "compact-now"), so we transform
+// dash -> underscore for the Telegram-facing name and reverse it on the way
+// back so the harness still receives its original name.
 const telegramCommandNamePattern = /^[a-z0-9_]{1,32}$/;
+
+export function toTelegramCommandName(name: string): string {
+  return name.replace(/-/g, "_");
+}
+
+export function fromTelegramCommandName(
+  telegramName: string,
+  piCommandNames: ReadonlySet<string>,
+): string {
+  if (piCommandNames.has(telegramName)) return telegramName;
+  const dashed = telegramName.replace(/_/g, "-");
+  if (piCommandNames.has(dashed)) return dashed;
+  return telegramName;
+}
 
 const bridgeLocalBotCommands: TelegramBotCommand[] = [
   { command: "start", description: "Show help and refresh this menu" },
@@ -104,7 +122,7 @@ export function buildTelegramBotCommands(
   }
   for (const command of piCommands) {
     addCommand({
-      command: command.name,
+      command: toTelegramCommandName(command.name),
       description: command.description ?? command.name,
     });
   }

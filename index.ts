@@ -76,9 +76,11 @@ import {
 } from "./lib/queue.ts";
 import {
   buildTelegramBotCommands,
+  fromTelegramCommandName,
   registerTelegramAttachmentTool,
   registerTelegramCommands,
   registerTelegramLifecycleHooks,
+  toTelegramCommandName,
 } from "./lib/registration.ts";
 import {
   MAX_MESSAGE_LENGTH,
@@ -1892,7 +1894,9 @@ export default function (pi: ExtensionAPI) {
       );
       for (const c of sorted) {
         const desc = c.description ? ` — ${c.description}` : "";
-        lines.push(`/${c.name}${desc}`);
+        // Show the Telegram-form (dashes -> underscores) since that's what
+        // the user has to type. The bridge translates back on dispatch.
+        lines.push(`/${toTelegramCommandName(c.name)}${desc}`);
       }
     }
     lines.push("", "/help re-syncs Telegram's command menu.");
@@ -1972,6 +1976,25 @@ export default function (pi: ExtensionAPI) {
       ctx,
     );
     if (handled) return;
+
+    // Pi commands with dashes are exposed in Telegram with underscores
+    // (Telegram bot command names disallow dashes). If the user typed the
+    // underscore form, rewrite the message text to the original dashed form
+    // so the harness's slash-command parser dispatches it correctly.
+    if (command) {
+      const piCommandNames = new Set(pi.getCommands().map((c) => c.name));
+      const original = fromTelegramCommandName(command.name, piCommandNames);
+      if (original !== command.name) {
+        const rewritten = command.args
+          ? `/${original} ${command.args}`
+          : `/${original}`;
+        if (firstMessage.text !== undefined) {
+          firstMessage.text = rewritten;
+        } else if (firstMessage.caption !== undefined) {
+          firstMessage.caption = rewritten;
+        }
+      }
+    }
 
     await enqueueTelegramTurn(messages, ctx);
   }
