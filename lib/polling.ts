@@ -54,6 +54,9 @@ export function shouldStopTelegramPolling(
   signalAborted: boolean,
   error: unknown,
 ): boolean {
+  // AbortError-from-our-own-timeout is normalized in fetchWithRetry so it
+  // can't reach here as a DOMException. Any AbortError that does reach here
+  // is therefore a real caller-abort and should stop the loop.
   return (
     signalAborted ||
     (error instanceof DOMException && error.name === "AbortError")

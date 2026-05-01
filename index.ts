@@ -2069,8 +2069,14 @@ export default function (pi: ExtensionAPI) {
         );
       },
       getUpdates: async (body, pollSignal) => {
+        // Long-poll: server-side timeout is 30s. We bypass our retry helper
+        // (the poll loop already retries by re-entering after a sleep) and
+        // give the per-attempt timeout enough headroom that a healthy poll
+        // can never trip it.
         return callTelegramApi<TelegramUpdate[]>("getUpdates", body, {
           signal: pollSignal,
+          retry: false,
+          attemptTimeoutMs: 60_000,
         });
       },
       persistConfig: async () => {
